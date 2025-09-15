@@ -122,14 +122,14 @@ def match_on_date_and_name(left, right, right_cols_keep,
       - does fuzzy match on 'insured_clean' within the date window.
     Returns: left + matched right columns + score.
     """
-    # Normalize headers (trim + lower) to avoid surprises
-    left  = left.rename(columns={c: c.strip(): c.strip() for c in left.columns})
-    right = right.rename(columns={c: c.strip(): c.strip() for c in right.columns})
+    # Normalize headers (trim -> lower)
+    left  = left.rename(columns=lambda c: c.strip())
+    right = right.rename(columns=lambda c: c.strip())
     left.columns  = [c.lower() for c in left.columns]
     right.columns = [c.lower() for c in right.columns]
-    right_cols_keep = [c.lower() for c in right_cols_keep]
-    left_date_col  = left_date_col.lower()
-    right_date_col = right_date_col.lower()
+    right_cols_keep = [c.strip().lower() for c in right_cols_keep]
+    left_date_col  = left_date_col.strip().lower()
+    right_date_col = right_date_col.strip().lower()
 
     # Validate columns
     if left_date_col not in left.columns:
@@ -170,6 +170,7 @@ def match_on_date_and_name(left, right, right_cols_keep,
         out.append({**r.to_dict(), 'match_score': score, **payload})
 
     return pd.DataFrame(out)
+
 
 # =============== RUN MATCHES (df1 as pivot) ===============
 left_base = df1_std[['insured','inception_date','expiration_date','insured_clean']].copy()
