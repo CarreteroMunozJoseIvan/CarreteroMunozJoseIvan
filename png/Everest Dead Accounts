@@ -53,3 +53,35 @@ def match_on_date_and_name(left, right, right_cols_keep,
         payload = match_row[right_cols_keep].to_dict()
         rows.append({**r.to_dict(), 'match_idx': idx, 'match_score': score, **payload})
     return pd.DataFrame(rows)
+
+# df1 -> df2
+m12 = match_on_date_and_name(
+    left=df1[['Primary Insured Name','Effective Date']].rename(
+        columns={'Primary Insured Name':'insured', 'Effective Date':'inception_date'}
+    ).assign(insured_clean=lambda d: d['insured'].map(clean_insured)),
+    right=df2.rename(columns={'INSURED':'insured', 'INCEPTION_DATE':'inception_date',
+                              'EXPIRY_DATE':'expiration_date', 'BROKER':'broker'}) \
+             .assign(insured_clean=lambda d: d['insured'].map(clean_insured),
+                     broker_clean=lambda d: d['broker'].map(clean_broker)),
+    right_cols_keep=['insured','insured_clean','inception_date','expiration_date',
+                     'broker','broker_clean','ASSIGNEE','OWNER','RISK_PROCESSING_STATUS'],
+    left_date_col='inception_date',     # en left ya lo renombramos
+    right_date_col='inception_date',    # en right también
+    tol_days=TOL_DAYS, threshold=THRESHOLD
+)
+
+# df1 -> df3
+m13 = match_on_date_and_name(
+    left=df1[['Primary Insured Name','Effective Date']].rename(
+        columns={'Primary Insured Name':'insured', 'Effective Date':'inception_date'}
+    ).assign(insured_clean=lambda d: d['insured'].map(clean_insured)),
+    right=df3.rename(columns={'Insured':'insured','Inception Date':'inception_date',
+                              'Broker':'broker'}) \
+             .assign(insured_clean=lambda d: d['insured'].map(clean_insured),
+                     broker_clean=lambda d: d['broker'].map(clean_broker)),
+    right_cols_keep=['insured','insured_clean','inception_date','broker','broker_clean','Live Status'],
+    left_date_col='inception_date',
+    right_date_col='inception_date',
+    tol_days=TOL_DAYS, threshold=THRESHOLD
+)
+
