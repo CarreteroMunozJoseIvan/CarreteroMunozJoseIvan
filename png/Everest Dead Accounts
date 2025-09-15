@@ -1,114 +1,41 @@
-# pip install rapidfuzz unidecode  # (si no puedes instalar, el script usa difflib como fallback)
-import re
-import pandas as pd
-from datetime import timedelta
+def match_on_date_and_name(left, right, right_cols_keep,
+                           left_date_col='inception_date',
+                           right_date_col='inception_date',
+                           tol_days=TOL_DAYS, threshold=THRESHOLD):
+    # Normaliza headers para evitar problemas de mayúsculas/espacios
+    left  = left.rename(columns={c: c.strip() for c in left.columns})
+    right = right.rename(columns={c: c.strip() for c in right.columns})
 
-try:
-    from rapidfuzz import process, fuzz
-    _USE_RAPIDFUZZ = True
-except Exception:
-    # Fallback sin instalar nada (menos preciso)
-    from difflib import SequenceMatcher
-    _USE_RAPIDFUZZ = False
+    # Si los nombres no están en minúsculas, crea alias en minúsculas
+    left.columns  = [c.lower() for c in left.columns]
+    right.columns = [c.lower() for c in right.columns]
+    right_cols_keep = [c.strip().lower() for c in right_cols_keep]
 
-try:
-    from unidecode import unidecode
-except Exception:
-    def unidecode(x):  # fallback mínimo
-        return x
+    left_date_col  = left_date_col.lower()
+    right_date_col = right_date_col.lower()
 
-# ---------------- Config ----------------
-TOL_DAYS   = 0      # pon 2-3 si quieres permitir pequeño descuadre de fechas
-THRESHOLD  = 90     # baja a 85/80 si hay mucha variación en nombres
-DAYFIRST   = True   # pon False si tus fechas son mm/dd/yyyy
+    # Asegura que existen y que son datetime
+    if right_date_col not in right.columns:
+        raise KeyError(f"'{right_date_col}' no está en right.columns: {list(right.columns)}")
+    if left_date_col not in left.columns:
+        raise KeyError(f"'{left_date_col}' no está en left.columns: {list(left.columns)}")
 
-LEGAL_SUFFIXES = r'\b(SA|S\.A\.|SAS|SL|S\.L\.|PLC|LLC|LTD|PTE|BV|GMBH|AG|SPA|S\.P\.A\.|SRL|S\.R\.L\.|INC|CO|COMPANY|CORP|CORPORATION|LIMITED|PTY|NV|AB|ASA|KFT|OY|AS|LLP)\b'
+    left[left_date_col]  = pd.to_datetime(left[left_date_col],  errors='coerce', dayfirst=DAYFIRST)
+    right[right_date_col] = pd.to_datetime(right[right_date_col], errors='coerce', dayfirst=DAYFIRST)
 
-GENERIC_WORDS = r'\b(THE|GROUP|HOLDING|HOLDINGS|INDUSTRIES|INDUSTRY|SERVICES|SERVICE|RESOURCES|RESOURCE|COMPANY|CO|CORP|CORPORATION)\b'
+    # Índice por fecha en right
+    right_idx = right.set_index(right_date_col)
 
-BROKER_SUFFIXES = r'\b(LTD|LIMITED|LLP|LLC|BV|GMBH|INC|CO|COMPANY|CORP|BROKING|BROKERS?)\b'
-
-# ------------- Helpers de limpieza -------------
-def clean_text(s: str) -> str:
-    s = '' if pd.isna(s) else str(s)
-    s = unidecode(s).upper()
-    s = re.sub(r'[\(\)\[\]\{\}]', ' ', s)     # quita paréntesis
-    s = re.sub(r'\d+', ' ', s)                 # quita números/IDs
-    s = re.sub(r'[^A-Z0-9 &/-]+', ' ', s)      # solo caracteres "seguros"
-    s = re.sub(r'\s+', ' ', s).strip()
-    return s
-
-def clean_insured(x: str) -> str:
-    x = clean_text(x)
-    x = re.sub(LEGAL_SUFFIXES, ' ', x)
-    x = re.sub(GENERIC_WORDS, ' ', x)
-    x = re.sub(r'\s+', ' ', x).strip()
-    return x
-
-def clean_broker(x: str) -> str:
-    x = clean_text(x)
-    x = re.sub(BROKER_SUFFIXES, ' ', x)
-    # normalizaciones frecuentes
-    x = x.replace('ARTHUR J GALLAGHER', 'GALLAGHER')
-    x = x.replace('A J GALLAGHER', 'GALLAGHER')
-    x = x.replace('WTW LIMITED', 'WTW').replace('WILLIS TOWERS WATSON', 'WTW')
-    x = x.replace('PRICE FORBES & PARTNERS', 'PRICE FORBES')
-    x = re.sub(r'\s+', ' ', x).strip()
-    return x
-
-def parse_date_col(s):
-    return pd.to_datetime(s, errors='coerce', dayfirst=DAYFIRST)
-
-def fuzzy_best(query, choices_series):
-    """Devuelve (score, idx_mejor). Usa rapidfuzz si está, si no difflib."""
-    if choices_series.empty or not isinstance(query, str) or not query:
-        return 0, None
-    if _USE_RAPIDFUZZ:
-        res = process.extractOne(query, choices_series, scorer=fuzz.token_set_ratio)
-        if res is None:
-            return 0, None
-        val, score, idx = res
-        return score, idx
-    else:
-        # Fallback simple
-        best_score, best_idx = 0.0, None
-        for idx, val in choices_series.items():
-            score = SequenceMatcher(None, query, val).ratio() * 100
-            if score > best_score:
-                best_score, best_idx = score, idx
-        return best_score, best_idx
-
-# ------------- Cargar y normalizar -------------
-df1 = df1.rename(columns={'Primary Insured Name':'insured',
-                          'Effective Date':'inception_date',
-                          'Expiration Date':'expiration_date'}).copy()
-df2 = df2.rename(columns={'INSURED':'insured',
-                          'INCEPTION_DATE':'inception_date',
-                          'EXPIRY_DATE':'expiration_date',
-                          'BROKER':'broker'}).copy()
-df3 = df3.rename(columns={'Insured':'insured',
-                          'Inception Date':'inception_date',
-                          'Broker':'broker'}).copy()
-
-for d in (df1, df2, df3):
-    d['inception_date'] = parse_date_col(d['inception_date'])
-    if 'broker' not in d.columns:  # df1 no tiene broker
-        d['broker'] = None
-    d['insured_clean'] = d['insured'].map(clean_insured)
-    d['broker_clean']  = d['broker'].map(clean_broker)
-
-# ------------- Emparejar df1 -> df2 / df3 -------------
-def match_on_date_and_name(left, right, right_cols_keep, tol_days=TOL_DAYS, threshold=THRESHOLD):
-    right_idx = right.set_index('inception_date')  # para filtrar por fecha
     rows = []
-    for i, r in left.iterrows():
-        d = r['inception_date']
+    for _, r in left.iterrows():
+        d = r[left_date_col]
         if pd.isna(d):
             rows.append({**r.to_dict(), 'match_idx': None, 'match_score': 0})
             continue
 
         if tol_days > 0:
-            mask = (right_idx.index >= d - timedelta(days=tol_days)) & (right_idx.index <= d + timedelta(days=tol_days))
+            mask = (right_idx.index >= d - pd.Timedelta(days=tol_days)) & \
+                   (right_idx.index <= d + pd.Timedelta(days=tol_days))
             candidates = right_idx.loc[mask]
         else:
             candidates = right_idx.loc[right_idx.index == d]
@@ -126,98 +53,3 @@ def match_on_date_and_name(left, right, right_cols_keep, tol_days=TOL_DAYS, thre
         payload = match_row[right_cols_keep].to_dict()
         rows.append({**r.to_dict(), 'match_idx': idx, 'match_score': score, **payload})
     return pd.DataFrame(rows)
-
-keep2 = ['insured','insured_clean','inception_date','expiration_date','broker','broker_clean','ASSIGNEE','OWNER','RISK_PROCESSING_STATUS']
-keep3 = ['insured','insured_clean','inception_date','broker','broker_clean','Live Status']
-
-m12 = match_on_date_and_name(
-    left=df1[['insured','insured_clean','inception_date','expiration_date']].copy(),
-    right=df2[keep2].copy(),
-    right_cols_keep=keep2
-).rename(columns={
-    'insured':'df1_insured',
-    'insured_clean':'df1_name_clean',
-    'inception_date':'df1_inception',
-    'expiration_date':'df1_expiry',
-    'insured_x':'_drop'
-})
-
-m13 = match_on_date_and_name(
-    left=df1[['insured','insured_clean','inception_date','expiration_date']].copy(),
-    right=df3[keep3].copy(),
-    right_cols_keep=keep3
-).rename(columns={
-    'insured':'df1_insured',
-    'insured_clean':'df1_name_clean',
-    'inception_date':'df1_inception',
-    'expiration_date':'df1_expiry'
-})
-
-# Renombra columnas de match para claridad
-m12 = m12.rename(columns={
-    'insured':'df2_insured', 'insured_clean':'df2_name_clean',
-    'inception_date':'df2_inception', 'expiration_date':'df2_expiry',
-    'broker':'df2_broker', 'broker_clean':'df2_broker_clean',
-    'ASSIGNEE':'df2_assignee', 'OWNER':'df2_owner', 'RISK_PROCESSING_STATUS':'df2_risk_status',
-    'match_score':'df2_score'
-})
-
-m13 = m13.rename(columns={
-    'insured':'df3_insured', 'insured_clean':'df3_name_clean',
-    'inception_date':'df3_inception',
-    'broker':'df3_broker', 'broker_clean':'df3_broker_clean',
-    'Live Status':'df3_live_status',
-    'match_score':'df3_score'
-})
-
-# Unimos por las claves de df1
-keys = ['df1_insured','df1_name_clean','df1_inception','df1_expiry']
-res = pd.merge(
-    m12[keys + ['df2_insured','df2_name_clean','df2_inception','df2_expiry','df2_score',
-                'df2_broker','df2_broker_clean','df2_assignee','df2_owner','df2_risk_status']],
-    m13[keys + ['df3_insured','df3_name_clean','df3_inception','df3_score',
-                'df3_broker','df3_broker_clean','df3_live_status']],
-    on=keys, how='outer'
-)
-
-# ------------- Flags de calidad y broker -------------
-res['match_df2'] = res['df2_score'].fillna(0).ge(THRESHOLD)
-res['match_df3'] = res['df3_score'].fillna(0).ge(THRESHOLD)
-res['triple_match'] = res['match_df2'] & res['match_df3']
-
-# Broker "igual" si coincide exacto o fuzzy alto (normalizado)
-def broker_equal(b1, b2):
-    if not b1 and not b2:
-        return True
-    if not b1 or not b2:
-        return False
-    if b1 == b2:
-        return True
-    # fuzzy rápido
-    if _USE_RAPIDFUZZ:
-        return fuzz.token_set_ratio(b1, b2) >= 92
-    else:
-        from difflib import SequenceMatcher
-        return SequenceMatcher(None, b1, b2).ratio()*100 >= 0.92*100
-
-res['df1_df2_broker_same'] = res.apply(lambda r: broker_equal(r.get('df2_broker_clean'), r.get('df2_broker_clean')), axis=1)  # df1 no tiene broker; este campo queda True por diseño
-res['df2_df3_broker_same'] = res.apply(lambda r: broker_equal(r.get('df2_broker_clean'), r.get('df3_broker_clean')), axis=1)
-
-# ------------- Vistas útiles -------------
-# Coincidencias buenas
-good = res[res['triple_match']].sort_values(['df2_score','df3_score'], ascending=False)
-
-# Necesitan revisión (sin match o broker distinto)
-needs_review = res[(~res['match_df2']) | (~res['match_df3']) | (~res['df2_df3_broker_same'].fillna(True))]
-
-# Export opcional
-# with pd.ExcelWriter('matching_report.xlsx', engine='xlsxwriter') as xw:
-#     res.to_excel(xw, index=False, sheet_name='all')
-#     good.to_excel(xw, index=False, sheet_name='triple_matches')
-#     needs_review.to_excel(xw, index=False, sheet_name='needs_review')
-
-# Muestra un resumen rápido
-print('Total df1:', len(df1))
-print('Triple matches:', good.shape[0])
-print('Revisar:', needs_review.shape[0])
-res.head(20)
