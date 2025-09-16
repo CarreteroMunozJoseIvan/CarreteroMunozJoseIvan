@@ -1,4 +1,4 @@
-# Optional (if allowed):
+# Optional:
 # !pip install rapidfuzz unidecode
 
 import re
@@ -6,9 +6,10 @@ import numpy as np
 import pandas as pd
 
 # ================= SETTINGS =================
-DAYFIRST_DEFAULT = True     # your typical format (can be wrong per-cell; parser handles both)
-TOL_DAYS        = 7         # allow ±7 days around inception date
-THRESHOLD       = 85        # fuzzy name score (85–90 works well)
+DAYFIRST_DEFAULT = True     # typical date format in your files (parser auto-detects per-cell anyway)
+TOL_DAYS        = 7         # ± days for inception date window
+THRESHOLD       = 85        # fuzzy score threshold (80–90 reasonable)
+STRICT_BROKER   = True      # require same broker (cleaned) to show in the final view
 
 # If you need to load files here, uncomment:
 # df1 = pd.read_excel('Escape - Dead Accounts.xlsx')
@@ -52,6 +53,7 @@ def clean_insured(x: str) -> str:
 def clean_broker(x: str) -> str:
     x = clean_text(x)
     x = re.sub(BROKER_SUFFIXES, ' ', x)
+    # common normalizations
     x = x.replace('ARTHUR J GALLAGHER', 'GALLAGHER').replace('A J GALLAGHER', 'GALLAGHER')
     x = x.replace('WILLIS TOWERS WATSON', 'WTW').replace('WTW LIMITED', 'WTW')
     x = x.replace('PRICE FORBES & PARTNERS', 'PRICE FORBES')
@@ -59,31 +61,27 @@ def clean_broker(x: str) -> str:
     return x
 
 def parse_date_safely(col, dayfirst_default=DAYFIRST_DEFAULT):
-    """Robustly convert to pandas Timestamp date (strip time). Handles Excel serials and mixed formats."""
+    """Handle Excel serials + mixed dd/mm vs mm/dd strings; returns date-only Timestamps."""
     s = col.copy()
-    # Excel serials -> datetime
-    is_num = pd.to_numeric(s, errors='coerce')
-    mask_num = ~is_num.isna()
     out = pd.Series(pd.NaT, index=s.index, dtype='datetime64[ns]')
 
+    # excel serials
+    as_num = pd.to_numeric(s, errors='coerce')
+    mask_num = ~as_num.isna()
     if mask_num.any():
-        out.loc[mask_num] = pd.to_datetime(is_num.loc[mask_num], unit='D', origin='1899-12-30', errors='coerce')
+        out.loc[mask_num] = pd.to_datetime(as_num.loc[mask_num], unit='D', origin='1899-12-30', errors='coerce')
 
-    # strings / others
+    # strings/others
     mask_str = ~mask_num & s.notna()
     if mask_str.any():
-        # try with default dayfirst
         t1 = pd.to_datetime(s.loc[mask_str], errors='coerce', dayfirst=dayfirst_default)
-        # any still NaT -> try opposite
-        mask_nat = t1.isna()
-        if mask_nat.any():
-            t2 = pd.to_datetime(s.loc[mask_str].loc[mask_nat], errors='coerce', dayfirst=not dayfirst_default)
-            t1.loc[mask_nat] = t2
+        nat_mask = t1.isna()
+        if nat_mask.any():
+            t2 = pd.to_datetime(s.loc[mask_str].loc[nat_mask], errors='coerce', dayfirst=not dayfirst_default)
+            t1.loc[nat_mask] = t2
         out.loc[mask_str] = t1
 
-    # normalize to date-only midnight
-    out = pd.to_datetime(out.dt.date, errors='coerce')
-    return out
+    return pd.to_datetime(out.dt.date, errors='coerce')
 
 def fuzzy_best(q, choices):
     if choices.empty or not isinstance(q, str) or not q:
@@ -102,12 +100,14 @@ def fuzzy_best(q, choices):
         return best, best_idx
 
 # =============== STANDARDIZE YOUR DFs ===============
+# df1: ['Primary Insured Name','Effective Date','Expiration Date']
 df1_std = df1.rename(columns={
     'Primary Insured Name':'insured',
     'Effective Date':'inception_date',
     'Expiration Date':'expiration_date'
 }).copy()
 
+# df2: ['INSURED','OWNER','ASSIGNEE','BROKER','INCEPTION_DATE','EXPIRY_DATE','RISK_PROCESSING_STATUS']
 df2_std = df2.rename(columns={
     'INSURED':'insured',
     'INCEPTION_DATE':'inception_date',
@@ -116,11 +116,12 @@ df2_std = df2.rename(columns={
     'RISK_PROCESSING_STATUS':'risk_status'
 }).copy()
 
+# df3: ['Insured','Inception Date','Live Status','Broker']
 df3_std = df3.rename(columns={
     'Insured':'insured',
     'Inception Date':'inception_date',
-    'Broker':'broker',
-    'Live Status':'live_status'
+    'Live Status':'live_status',
+    'Broker':'broker'
 }).copy()
 
 for d in (df1_std, df2_std, df3_std):
@@ -132,7 +133,7 @@ for d in (df1_std, df2_std, df3_std):
     d['insured_clean'] = d['insured'].map(clean_insured)
     d['broker_clean']  = d['broker'].map(clean_broker) if 'broker' in d.columns else None
 
-# =============== MATCHER (DATE ± TOL + FUZZY) ===============
+# =============== ROBUST MATCHER (prefix right-side cols) ===============
 def match_on_date_and_name(left, right, left_date_col, right_date_col, right_prefix,
                            tol_days=TOL_DAYS, threshold=THRESHOLD):
     left  = left.rename(columns=lambda c: c.strip())
@@ -142,7 +143,6 @@ def match_on_date_and_name(left, right, left_date_col, right_date_col, right_pre
     left_date_col  = left_date_col.lower()
     right_date_col = right_date_col.lower()
 
-    # ensure must-have columns
     for need in ['insured_clean', left_date_col]:
         if need not in left.columns:
             raise KeyError(f"'{need}' missing on left")
@@ -150,7 +150,6 @@ def match_on_date_and_name(left, right, left_date_col, right_date_col, right_pre
         if need not in right.columns:
             raise KeyError(f"'{need}' missing on right")
 
-    # ensure datetime
     left[left_date_col]   = parse_date_safely(left[left_date_col])
     right[right_date_col] = parse_date_safely(right[right_date_col])
 
@@ -183,36 +182,33 @@ def match_on_date_and_name(left, right, left_date_col, right_date_col, right_pre
 
     return pd.DataFrame(out)
 
-# df1 as pivot
+# Pivot on df1 and match to df2 & df3
 left_base = df1_std[['insured','inception_date','expiration_date','insured_clean']].copy()
 
 m12 = match_on_date_and_name(
     left=left_base, right=df2_std,
     left_date_col='inception_date', right_date_col='inception_date',
-    right_prefix='df2_',
-    tol_days=TOL_DAYS, threshold=THRESHOLD
+    right_prefix='df2_', tol_days=TOL_DAYS, threshold=THRESHOLD
 )
 
 m13 = match_on_date_and_name(
     left=left_base, right=df3_std,
     left_date_col='inception_date', right_date_col='inception_date',
-    right_prefix='df3_',
-    tol_days=TOL_DAYS, threshold=THRESHOLD
+    right_prefix='df3_', tol_days=TOL_DAYS, threshold=THRESHOLD
 )
 
-# merge results
+# Merge results
 keys = ['insured','insured_clean','inception_date','expiration_date']
 res = pd.merge(m12, m13, on=keys, how='outer')
 
-# =============== FLAGS & COMPARISONS ===============
+# =============== FLAGS & BROKER CHECKS ===============
 res['match_df2'] = res['df2_score'].fillna(0).ge(THRESHOLD)
 res['match_df3'] = res['df3_score'].fillna(0).ge(THRESHOLD)
 res['triple_match'] = res['match_df2'] & res['match_df3']
 
-# broker equality after match (post-filter)
 def brokers_equal(b1, b2):
     if (not b1) and (not b2): return True
-    if (not b1) or (not b2):  return False
+    if (not b1) or (not b1):  return False
     if b1 == b2: return True
     if _USE_RAPIDFUZZ:
         return fuzz.token_set_ratio(b1, b2) >= 92
@@ -223,17 +219,28 @@ res['df2_df3_broker_same'] = res.apply(
     lambda r: brokers_equal(r.get('df2_broker_clean'), r.get('df3_broker_clean')), axis=1
 )
 
-# For your target: show Live Status from df3 alongside df2 risk status when matched & same broker
-res['status_compare_ok'] = res['triple_match'] & res['df2_df3_broker_same']
+if STRICT_BROKER:
+    mask_ok = res['triple_match'] & res['df2_df3_broker_same']
+else:
+    mask_ok = res['triple_match']
 
-# convenient view: only the rows where we have both matches and same broker
-view = res.loc[res['status_compare_ok'],
-               ['insured','inception_date',
-                'df2_insured','df2_broker','df2_risk_status',
-                'df3_insured','df3_broker','df3_live_status',
-                'df2_score','df3_score']].sort_values(['df2_score','df3_score'], ascending=False)
+# =============== SAFE FINAL VIEW (no KeyError) ===============
+# Columns we want to show (create any missing ones as empty)
+desired_cols = [
+    'insured','inception_date',
+    'df2_insured','df2_broker','df2_risk_status',
+    'df3_insured','df3_broker','df3_live_status',
+    'df2_score','df3_score'
+]
+for c in desired_cols:
+    if c not in res.columns:
+        res[c] = pd.NA  # ensures selection will never fail
+
+view = res.loc[mask_ok, desired_cols].sort_values(['df2_score','df3_score'], ascending=False)
 
 print('df1 rows:', len(df1_std))
-print('Rows with df1→df2 & df1→df3 match and SAME broker:', len(view))
-print('Preview:')
+print('Matched rows (date±%dd, name score≥%d%s): %d' %
+      (TOL_DAYS, THRESHOLD, ' & same broker' if STRICT_BROKER else '', len(view)))
 print(view.head(20))
+
+
