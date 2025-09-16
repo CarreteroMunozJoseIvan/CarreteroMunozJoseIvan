@@ -1,246 +1,98 @@
-# Optional:
+# OPTIONAL (comment if locked)
 # !pip install rapidfuzz unidecode
 
-import re
-import numpy as np
-import pandas as pd
-
-# ================= SETTINGS =================
-DAYFIRST_DEFAULT = True     # typical date format in your files (parser auto-detects per-cell anyway)
-TOL_DAYS        = 7         # ± days for inception date window
-THRESHOLD       = 85        # fuzzy score threshold (80–90 reasonable)
-STRICT_BROKER   = True      # require same broker (cleaned) to show in the final view
-
-# If you need to load files here, uncomment:
-# df1 = pd.read_excel('Escape - Dead Accounts.xlsx')
-# df2 = pd.read_excel('Everview_Data.xlsx')
-# df3 = pd.read_excel('UK&I_DATA_TRACKER.xlsx')
-
-# =============== FUZZY ENGINE ===============
+import re, pandas as pd
 try:
     from rapidfuzz import process, fuzz
-    _USE_RAPIDFUZZ = True
+    _USE_RAPIDFUZZ=True
 except Exception:
     from difflib import SequenceMatcher
-    _USE_RAPIDFUZZ = False
-
+    _USE_RAPIDFUZZ=False
 try:
     from unidecode import unidecode
 except Exception:
     def unidecode(x): return x
 
-# =============== CLEANING HELPERS ===============
+# ---------- cleaners ----------
 LEGAL_SUFFIXES  = r'\b(SA|S\.A\.|SAS|SL|S\.L\.|PLC|LLC|LTD|PTE|BV|GMBH|AG|SPA|S\.P\.A\.|SRL|S\.R\.L\.|INC|CO|COMPANY|CORP|CORPORATION|LIMITED|PTY|NV|AB|ASA|KFT|OY|AS|LLP)\b'
 GENERIC_WORDS   = r'\b(THE|GROUP|HOLDING|HOLDINGS|INDUSTRIES|INDUSTRY|SERVICES?|RESOURCES?)\b'
-BROKER_SUFFIXES = r'\b(LTD|LIMITED|LLP|LLC|BV|GMBH|INC|CO|COMPANY|CORP|BROKING|BROKERS?)\b'
 
-def clean_text(s: str) -> str:
+def clean_text(s):
     s = '' if pd.isna(s) else str(s)
     s = unidecode(s).upper()
-    s = re.sub(r'[\(\)\[\]\{\}]', ' ', s)
-    s = re.sub(r'\d+', ' ', s)
-    s = re.sub(r'[^A-Z0-9 &/-]+', ' ', s)
+    s = re.sub(r'[^A-Z0-9 ]+', ' ', s)
     s = re.sub(r'\s+', ' ', s).strip()
     return s
 
-def clean_insured(x: str) -> str:
+def clean_insured(x):
     x = clean_text(x)
     x = re.sub(LEGAL_SUFFIXES, ' ', x)
     x = re.sub(GENERIC_WORDS, ' ', x)
-    x = re.sub(r'\s+', ' ', x).strip()
-    return x
-
-def clean_broker(x: str) -> str:
-    x = clean_text(x)
-    x = re.sub(BROKER_SUFFIXES, ' ', x)
-    # common normalizations
-    x = x.replace('ARTHUR J GALLAGHER', 'GALLAGHER').replace('A J GALLAGHER', 'GALLAGHER')
-    x = x.replace('WILLIS TOWERS WATSON', 'WTW').replace('WTW LIMITED', 'WTW')
-    x = x.replace('PRICE FORBES & PARTNERS', 'PRICE FORBES')
-    x = re.sub(r'\s+', ' ', x).strip()
-    return x
-
-def parse_date_safely(col, dayfirst_default=DAYFIRST_DEFAULT):
-    """Handle Excel serials + mixed dd/mm vs mm/dd strings; returns date-only Timestamps."""
-    s = col.copy()
-    out = pd.Series(pd.NaT, index=s.index, dtype='datetime64[ns]')
-
-    # excel serials
-    as_num = pd.to_numeric(s, errors='coerce')
-    mask_num = ~as_num.isna()
-    if mask_num.any():
-        out.loc[mask_num] = pd.to_datetime(as_num.loc[mask_num], unit='D', origin='1899-12-30', errors='coerce')
-
-    # strings/others
-    mask_str = ~mask_num & s.notna()
-    if mask_str.any():
-        t1 = pd.to_datetime(s.loc[mask_str], errors='coerce', dayfirst=dayfirst_default)
-        nat_mask = t1.isna()
-        if nat_mask.any():
-            t2 = pd.to_datetime(s.loc[mask_str].loc[nat_mask], errors='coerce', dayfirst=not dayfirst_default)
-            t1.loc[nat_mask] = t2
-        out.loc[mask_str] = t1
-
-    return pd.to_datetime(out.dt.date, errors='coerce')
+    return re.sub(r'\s+', ' ', x).strip()
 
 def fuzzy_best(q, choices):
-    if choices.empty or not isinstance(q, str) or not q:
-        return 0, None
+    if choices.empty or not q: return 0, None
     if _USE_RAPIDFUZZ:
         res = process.extractOne(q, choices, scorer=fuzz.token_set_ratio)
-        if res is None: return 0, None
-        _, score, idx = res
-        return score, idx
+        return (0, None) if res is None else (res[1], res[2])
     else:
         best, best_idx = 0.0, None
         for idx, val in choices.items():
-            score = SequenceMatcher(None, q, val).ratio() * 100
-            if score > best:
-                best, best_idx = score, idx
+            sc = SequenceMatcher(None, q, val).ratio()*100
+            if sc>best: best, best_idx = sc, idx
         return best, best_idx
 
-# =============== STANDARDIZE YOUR DFs ===============
-# df1: ['Primary Insured Name','Effective Date','Expiration Date']
-df1_std = df1.rename(columns={
-    'Primary Insured Name':'insured',
-    'Effective Date':'inception_date',
-    'Expiration Date':'expiration_date'
-}).copy()
+# ---------- standardize columns (from your screenshots) ----------
+df1_ = df1.rename(columns={'Primary Insured Name':'insured'})[['insured']].copy()
+df2_ = df2.rename(columns={'INSURED':'insured','RISK_PROCESSING_STATUS':'risk_status'})[['insured','risk_status']].copy()
+df3_ = df3.rename(columns={'Insured':'insured','Live Status':'live_status'})[['insured','live_status']].copy()
 
-# df2: ['INSURED','OWNER','ASSIGNEE','BROKER','INCEPTION_DATE','EXPIRY_DATE','RISK_PROCESSING_STATUS']
-df2_std = df2.rename(columns={
-    'INSURED':'insured',
-    'INCEPTION_DATE':'inception_date',
-    'EXPIRY_DATE':'expiration_date',
-    'BROKER':'broker',
-    'RISK_PROCESSING_STATUS':'risk_status'
-}).copy()
-
-# df3: ['Insured','Inception Date','Live Status','Broker']
-df3_std = df3.rename(columns={
-    'Insured':'insured',
-    'Inception Date':'inception_date',
-    'Live Status':'live_status',
-    'Broker':'broker'
-}).copy()
-
-for d in (df1_std, df2_std, df3_std):
-    d['inception_date'] = parse_date_safely(d['inception_date'])
-    if 'expiration_date' in d.columns:
-        d['expiration_date'] = parse_date_safely(d['expiration_date'])
-    if 'broker' not in d.columns:
-        d['broker'] = None
+for d in (df1_, df2_, df3_):
     d['insured_clean'] = d['insured'].map(clean_insured)
-    d['broker_clean']  = d['broker'].map(clean_broker) if 'broker' in d.columns else None
 
-# =============== ROBUST MATCHER (prefix right-side cols) ===============
-def match_on_date_and_name(left, right, left_date_col, right_date_col, right_prefix,
-                           tol_days=TOL_DAYS, threshold=THRESHOLD):
-    left  = left.rename(columns=lambda c: c.strip())
-    right = right.rename(columns=lambda c: c.strip())
-    left.columns  = [c.lower() for c in left.columns]
-    right.columns = [c.lower() for c in right.columns]
-    left_date_col  = left_date_col.lower()
-    right_date_col = right_date_col.lower()
+# ---------- match df1 -> df2 and df1 -> df3 by NAME ONLY ----------
+THRESHOLD = 85  # loosen/tighten if needed
 
-    for need in ['insured_clean', left_date_col]:
-        if need not in left.columns:
-            raise KeyError(f"'{need}' missing on left")
-    for need in ['insured_clean', right_date_col]:
-        if need not in right.columns:
-            raise KeyError(f"'{need}' missing on right")
+# build name index once
+idx2 = df2_.set_index('insured_clean', drop=False)
+idx3 = df3_.set_index('insured_clean', drop=False)
 
-    left[left_date_col]   = parse_date_safely(left[left_date_col])
-    right[right_date_col] = parse_date_safely(right[right_date_col])
+rows = []
+for _, r in df1_.iterrows():
+    base = {'df1_insured': r['insured'], 'df1_name_clean': r['insured_clean']}
 
-    right_idx = right.set_index(right_date_col, drop=False)
-    out = []
-
-    for _, r in left.iterrows():
-        d = r[left_date_col]
-        base = r.to_dict()
-        if pd.isna(d):
-            base[f'{right_prefix}score'] = 0
-            out.append(base); continue
-
-        lo, hi = d - pd.Timedelta(days=tol_days), d + pd.Timedelta(days=tol_days)
-        cand = right_idx[(right_idx[right_date_col] >= lo) & (right_idx[right_date_col] <= hi)]
-
-        if cand.empty:
-            base[f'{right_prefix}score'] = 0
-            out.append(base); continue
-
-        score, idx = fuzzy_best(r['insured_clean'], cand['insured_clean'])
-        if idx is None or score < threshold:
-            base[f'{right_prefix}score'] = score
-            out.append(base); continue
-
-        payload = {f'{right_prefix}{k}': v for k, v in cand.loc[idx].to_dict().items()}
-        base.update(payload)
-        base[f'{right_prefix}score'] = score
-        out.append(base)
-
-    return pd.DataFrame(out)
-
-# Pivot on df1 and match to df2 & df3
-left_base = df1_std[['insured','inception_date','expiration_date','insured_clean']].copy()
-
-m12 = match_on_date_and_name(
-    left=left_base, right=df2_std,
-    left_date_col='inception_date', right_date_col='inception_date',
-    right_prefix='df2_', tol_days=TOL_DAYS, threshold=THRESHOLD
-)
-
-m13 = match_on_date_and_name(
-    left=left_base, right=df3_std,
-    left_date_col='inception_date', right_date_col='inception_date',
-    right_prefix='df3_', tol_days=TOL_DAYS, threshold=THRESHOLD
-)
-
-# Merge results
-keys = ['insured','insured_clean','inception_date','expiration_date']
-res = pd.merge(m12, m13, on=keys, how='outer')
-
-# =============== FLAGS & BROKER CHECKS ===============
-res['match_df2'] = res['df2_score'].fillna(0).ge(THRESHOLD)
-res['match_df3'] = res['df3_score'].fillna(0).ge(THRESHOLD)
-res['triple_match'] = res['match_df2'] & res['match_df3']
-
-def brokers_equal(b1, b2):
-    if (not b1) and (not b2): return True
-    if (not b1) or (not b1):  return False
-    if b1 == b2: return True
-    if _USE_RAPIDFUZZ:
-        return fuzz.token_set_ratio(b1, b2) >= 92
+    sc2, i2 = fuzzy_best(r['insured_clean'], idx2['insured_clean'])
+    if i2 is not None and sc2 >= THRESHOLD:
+        m2 = idx2.loc[i2]
+        base.update({'df2_insured': m2['insured'], 'df2_status': m2.get('risk_status'), 'df2_score': sc2})
     else:
-        return SequenceMatcher(None, b1, b2).ratio() >= 0.92
+        base.update({'df2_insured': pd.NA, 'df2_status': pd.NA, 'df2_score': 0})
 
-res['df2_df3_broker_same'] = res.apply(
-    lambda r: brokers_equal(r.get('df2_broker_clean'), r.get('df3_broker_clean')), axis=1
+    sc3, i3 = fuzzy_best(r['insured_clean'], idx3['insured_clean'])
+    if i3 is not None and sc3 >= THRESHOLD:
+        m3 = idx3.loc[i3]
+        base.update({'df3_insured': m3['insured'], 'df3_status': m3.get('live_status'), 'df3_score': sc3})
+    else:
+        base.update({'df3_insured': pd.NA, 'df3_status': pd.NA, 'df3_score': 0})
+
+    rows.append(base)
+
+result = pd.DataFrame(rows)
+
+# same-status flag (string-normalized)
+def norm_status(x):
+    return None if pd.isna(x) else str(x).strip().upper()
+
+result['status_match'] = result.apply(
+    lambda r: (norm_status(r['df2_status']) == norm_status(r['df3_status'])) 
+              if pd.notna(r['df2_status']) and pd.notna(r['df3_status']) else False,
+    axis=1
 )
 
-if STRICT_BROKER:
-    mask_ok = res['triple_match'] & res['df2_df3_broker_same']
-else:
-    mask_ok = res['triple_match']
+# keep only rows where both statuses found (optional)
+only_with_both = result[result['df2_status'].notna() & result['df3_status'].notna()] \
+    .sort_values(['status_match','df2_score','df3_score'], ascending=[False, False, False])
 
-# =============== SAFE FINAL VIEW (no KeyError) ===============
-# Columns we want to show (create any missing ones as empty)
-desired_cols = [
-    'insured','inception_date',
-    'df2_insured','df2_broker','df2_risk_status',
-    'df3_insured','df3_broker','df3_live_status',
-    'df2_score','df3_score'
-]
-for c in desired_cols:
-    if c not in res.columns:
-        res[c] = pd.NA  # ensures selection will never fail
-
-view = res.loc[mask_ok, desired_cols].sort_values(['df2_score','df3_score'], ascending=False)
-
-print('df1 rows:', len(df1_std))
-print('Matched rows (date±%dd, name score≥%d%s): %d' %
-      (TOL_DAYS, THRESHOLD, ' & same broker' if STRICT_BROKER else '', len(view)))
-print(view.head(20))
-
-
+# peek
+print("Rows with both statuses:", len(only_with_both))
+only_with_both.head(20)
