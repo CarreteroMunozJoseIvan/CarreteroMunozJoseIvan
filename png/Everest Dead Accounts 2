@@ -1,19 +1,19 @@
-# OPTIONAL (comment if locked)
+# OPTIONAL (comment out if locked env)
 # !pip install rapidfuzz unidecode
 
 import re
 import numpy as np
 import pandas as pd
 
-# ====== CONFIG ======
-THRESHOLD = 85  # 80–90 is typical
+# ===== CONFIG =====
+THRESHOLD = 85  # loosen/tighten as needed
 
 # If needed, load files here:
 # df1 = pd.read_excel('Escape - Dead Accounts.xlsx')
 # df2 = pd.read_excel('Everview_Data.xlsx')
 # df3 = pd.read_excel('UK&I_DATA_TRACKER.xlsx')
 
-# ====== Fuzzy engine ======
+# ===== Fuzzy engine =====
 try:
     from rapidfuzz import process, fuzz
     _USE_RAPIDFUZZ = True
@@ -26,7 +26,7 @@ try:
 except Exception:
     def unidecode(x): return x
 
-# ====== Cleaning helpers ======
+# ===== Cleaning =====
 LEGAL_SUFFIXES = r'\b(SA|S\.A\.|SAS|SL|S\.L\.|PLC|LLC|LTD|PTE|BV|GMBH|AG|SPA|S\.P\.A\.|SRL|S\.R\.L\.|INC|CO|COMPANY|CORP|CORPORATION|LIMITED|PTY|NV|AB|ASA|KFT|OY|AS|LLP)\b'
 GENERIC_WORDS  = r'\b(THE|GROUP|HOLDING|HOLDINGS|INDUSTRIES|INDUSTRY|SERVICES?|RESOURCES?)\b'
 
@@ -46,26 +46,22 @@ def clean_insured(x: str) -> str:
 def fuzzy_best_row(df: pd.DataFrame, query: str, col: str = 'insured_clean'):
     """
     Return (row: pd.Series or None, score: float).
-    Uses a RANGE index so result is always a single row via iloc.
+    Ensures result is a single row (scalar values).
     """
     if not isinstance(query, str) or query == '' or df.empty:
         return None, 0
-
-    # make sure we have a simple RangeIndex: 0..n-1
     if not isinstance(df.index, pd.RangeIndex):
         df = df.reset_index(drop=True)
-
     choices = df[col]
 
     if _USE_RAPIDFUZZ:
         res = process.extractOne(query, choices, scorer=fuzz.token_set_ratio)
-        if res is None:
-            return None, 0
+        if res is None: return None, 0
         _, score, idx = res
     else:
         best, idx = 0.0, None
         for i, val in choices.items():
-            sc = SequenceMatcher(None, query, val).ratio() * 100
+            sc = SequenceMatcher(None, query, val).ratio()*100
             if sc > best:
                 best, idx = sc, i
         score = best
@@ -73,53 +69,69 @@ def fuzzy_best_row(df: pd.DataFrame, query: str, col: str = 'insured_clean'):
     if idx is None or score < THRESHOLD:
         return None, score
 
-    return df.iloc[int(idx)], float(score)   # <-- single row (scalar fields)
+    return df.iloc[int(idx)], float(score)
 
 def norm_status(x):
     if x is None or (isinstance(x, float) and np.isnan(x)) or pd.isna(x):
         return None
     return str(x).strip().upper()
 
-# ====== Standardize columns (per your screenshots) ======
-df1_ = df1.rename(columns={'Primary Insured Name':'insured'})[['insured']].copy()
-df2_ = df2.rename(columns={'INSURED':'insured', 'RISK_PROCESSING_STATUS':'risk_status'})[['insured','risk_status']].copy()
-df3_ = df3.rename(columns={'Insured':'insured', 'Live Status':'live_status'})[['insured','live_status']].copy()
+# ===== Standardize DFs =====
+df1_ = df1.rename(columns={
+    'Primary Insured Name':'insured',
+    'Effective Date':'inception_date'
+})[['insured','inception_date']].copy()
 
-# clean names + ensure RangeIndex
+df2_ = df2.rename(columns={
+    'INSURED':'insured',
+    'INCEPTION_DATE':'inception_date',
+    'RISK_PROCESSING_STATUS':'risk_status'
+})[['insured','inception_date','risk_status']].copy()
+
+df3_ = df3.rename(columns={
+    'Insured':'insured',
+    'Inception Date':'inception_date',
+    'Live Status':'live_status'
+})[['insured','inception_date','live_status']].copy()
+
+# clean names
 for d in (df1_, df2_, df3_):
     d['insured_clean'] = d['insured'].map(clean_insured)
     d.reset_index(drop=True, inplace=True)
 
-# ====== Match df1 -> df2 and df1 -> df3 by NAME ONLY ======
+# ===== Match df1 -> df2 + df3 =====
 rows = []
 for _, r in df1_.iterrows():
     q = r['insured_clean']
     base = {
         'df1_insured': r['insured'],
+        'df1_inception': r['inception_date'],
         'df1_name_clean': q
     }
 
-    row2, sc2 = fuzzy_best_row(df2_, q, col='insured_clean')
+    row2, sc2 = fuzzy_best_row(df2_, q)
     if row2 is not None:
         base.update({
             'df2_insured': row2['insured'],
-            'df2_status':  row2.get('risk_status', np.nan),
-            'df2_score':   sc2
+            'df2_inception': row2['inception_date'],
+            'df2_status': row2.get('risk_status', np.nan),
+            'df2_score': sc2
         })
     else:
-        base.update({'df2_insured': np.nan, 'df2_status': np.nan, 'df2_score': sc2})
+        base.update({'df2_insured': np.nan,'df2_inception': np.nan,'df2_status': np.nan,'df2_score': sc2})
 
-    row3, sc3 = fuzzy_best_row(df3_, q, col='insured_clean')
+    row3, sc3 = fuzzy_best_row(df3_, q)
     if row3 is not None:
         base.update({
             'df3_insured': row3['insured'],
-            'df3_status':  row3.get('live_status', np.nan),
-            'df3_score':   sc3
+            'df3_inception': row3['inception_date'],
+            'df3_status': row3.get('live_status', np.nan),
+            'df3_score': sc3
         })
     else:
-        base.update({'df3_insured': np.nan, 'df3_status': np.nan, 'df3_score': sc3})
+        base.update({'df3_insured': np.nan,'df3_inception': np.nan,'df3_status': np.nan,'df3_score': sc3})
 
-    # Safe scalar comparison of statuses
+    # status match check
     s2 = norm_status(base['df2_status'])
     s3 = norm_status(base['df3_status'])
     base['status_match'] = (s2 is not None and s3 is not None and s2 == s3)
@@ -128,12 +140,14 @@ for _, r in df1_.iterrows():
 
 result = pd.DataFrame(rows)
 
-# view rows where both statuses exist (optional)
-with_both = result[result['df2_status'].notna() & result['df3_status'].notna()]\
-            .sort_values(['status_match','df2_score','df3_score'], ascending=[False, False, False])
+# ===== View with both statuses =====
+with_both = (
+    result[result['df2_status'].notna() & result['df3_status'].notna()]
+    .sort_values(['status_match','df2_score','df3_score'], ascending=[False,False,False])
+)
 
 print("Rows with both statuses:", len(with_both))
 print(with_both.head(20))
 
 # Optional export
-# with_both.to_excel('status_match_by_name_only.xlsx', index=False)
+# with_both.to_excel("status_match_with_inceptions.xlsx", index=False)
