@@ -1,74 +1,97 @@
-# OPTIONAL (comment if locked)
+# --- Optional installs (comment out if locked) ---
 # !pip install rapidfuzz unidecode
 
-import re, pandas as pd
+import re
+import pandas as pd
+
+# ========== CONFIG ==========
+THRESHOLD = 85  # name-match score (80–90 usually good)
+
+# If you need to load files here, uncomment and set your paths:
+# df1 = pd.read_excel('Escape - Dead Accounts.xlsx')
+# df2 = pd.read_excel('Everview_Data.xlsx')
+# df3 = pd.read_excel('UK&I_DATA_TRACKER.xlsx')
+
+# ========== Fuzzy engine pick ==========
 try:
     from rapidfuzz import process, fuzz
-    _USE_RAPIDFUZZ=True
+    _USE_RAPIDFUZZ = True
 except Exception:
     from difflib import SequenceMatcher
-    _USE_RAPIDFUZZ=False
+    _USE_RAPIDFUZZ = False
+
 try:
     from unidecode import unidecode
 except Exception:
     def unidecode(x): return x
 
-# ---------- cleaners ----------
+# ========== Cleaning helpers ==========
 LEGAL_SUFFIXES  = r'\b(SA|S\.A\.|SAS|SL|S\.L\.|PLC|LLC|LTD|PTE|BV|GMBH|AG|SPA|S\.P\.A\.|SRL|S\.R\.L\.|INC|CO|COMPANY|CORP|CORPORATION|LIMITED|PTY|NV|AB|ASA|KFT|OY|AS|LLP)\b'
 GENERIC_WORDS   = r'\b(THE|GROUP|HOLDING|HOLDINGS|INDUSTRIES|INDUSTRY|SERVICES?|RESOURCES?)\b'
 
-def clean_text(s):
+def clean_text(s: str) -> str:
     s = '' if pd.isna(s) else str(s)
     s = unidecode(s).upper()
     s = re.sub(r'[^A-Z0-9 ]+', ' ', s)
     s = re.sub(r'\s+', ' ', s).strip()
     return s
 
-def clean_insured(x):
+def clean_insured(x: str) -> str:
     x = clean_text(x)
     x = re.sub(LEGAL_SUFFIXES, ' ', x)
-    x = re.sub(GENERIC_WORDS, ' ', x)
+    x = re.sub(GENERIC_WORDS,  ' ', x)
     return re.sub(r'\s+', ' ', x).strip()
 
-def fuzzy_best(q, choices):
-    if choices.empty or not q: return 0, None
+def fuzzy_best(query, choices_series):
+    """Return (score, index) of best match in choices_series (which holds cleaned names)."""
+    if choices_series.empty or not isinstance(query, str) or not query:
+        return 0, None
     if _USE_RAPIDFUZZ:
-        res = process.extractOne(q, choices, scorer=fuzz.token_set_ratio)
-        return (0, None) if res is None else (res[1], res[2])
+        res = process.extractOne(query, choices_series, scorer=fuzz.token_set_ratio)
+        if res is None: return 0, None
+        _, score, idx = res
+        return score, idx
     else:
         best, best_idx = 0.0, None
-        for idx, val in choices.items():
-            sc = SequenceMatcher(None, q, val).ratio()*100
-            if sc>best: best, best_idx = sc, idx
+        for idx, val in choices_series.items():
+            score = SequenceMatcher(None, query, val).ratio() * 100
+            if score > best:
+                best, best_idx = score, idx
         return best, best_idx
 
-# ---------- standardize columns (from your screenshots) ----------
+# ========== Standardize columns from your screenshots ==========
+# df1: ['Primary Insured Name', ...]
 df1_ = df1.rename(columns={'Primary Insured Name':'insured'})[['insured']].copy()
-df2_ = df2.rename(columns={'INSURED':'insured','RISK_PROCESSING_STATUS':'risk_status'})[['insured','risk_status']].copy()
-df3_ = df3.rename(columns={'Insured':'insured','Live Status':'live_status'})[['insured','live_status']].copy()
 
+# df2: ['INSURED', 'RISK_PROCESSING_STATUS', ...]
+df2_ = df2.rename(columns={'INSURED':'insured', 'RISK_PROCESSING_STATUS':'risk_status'})[['insured','risk_status']].copy()
+
+# df3: ['Insured', 'Live Status', ...]
+df3_ = df3.rename(columns={'Insured':'insured', 'Live Status':'live_status'})[['insured','live_status']].copy()
+
+# Clean names
 for d in (df1_, df2_, df3_):
     d['insured_clean'] = d['insured'].map(clean_insured)
 
-# ---------- match df1 -> df2 and df1 -> df3 by NAME ONLY ----------
-THRESHOLD = 85  # loosen/tighten if needed
-
-# build name index once
+# ========== Match df1 -> df2 and df1 -> df3 by NAME ONLY ==========
 idx2 = df2_.set_index('insured_clean', drop=False)
 idx3 = df3_.set_index('insured_clean', drop=False)
 
 rows = []
 for _, r in df1_.iterrows():
-    base = {'df1_insured': r['insured'], 'df1_name_clean': r['insured_clean']}
+    name_clean = r['insured_clean']
+    base = {'df1_insured': r['insured'], 'df1_name_clean': name_clean}
 
-    sc2, i2 = fuzzy_best(r['insured_clean'], idx2['insured_clean'])
+    # df1 -> df2
+    sc2, i2 = fuzzy_best(name_clean, idx2['insured_clean'])
     if i2 is not None and sc2 >= THRESHOLD:
         m2 = idx2.loc[i2]
         base.update({'df2_insured': m2['insured'], 'df2_status': m2.get('risk_status'), 'df2_score': sc2})
     else:
         base.update({'df2_insured': pd.NA, 'df2_status': pd.NA, 'df2_score': 0})
 
-    sc3, i3 = fuzzy_best(r['insured_clean'], idx3['insured_clean'])
+    # df1 -> df3
+    sc3, i3 = fuzzy_best(name_clean, idx3['insured_clean'])
     if i3 is not None and sc3 >= THRESHOLD:
         m3 = idx3.loc[i3]
         base.update({'df3_insured': m3['insured'], 'df3_status': m3.get('live_status'), 'df3_score': sc3})
@@ -79,20 +102,29 @@ for _, r in df1_.iterrows():
 
 result = pd.DataFrame(rows)
 
-# same-status flag (string-normalized)
+# ========== Compare statuses safely ==========
 def norm_status(x):
-    return None if pd.isna(x) else str(x).strip().upper()
+    if pd.isna(x): return None
+    return str(x).strip().upper()
 
 result['status_match'] = result.apply(
-    lambda r: (norm_status(r['df2_status']) == norm_status(r['df3_status'])) 
-              if pd.notna(r['df2_status']) and pd.notna(r['df3_status']) else False,
+    lambda r: (
+        norm_status(r['df2_status']) == norm_status(r['df3_status'])
+        if (pd.notna(r['df2_status']) and pd.notna(r['df3_status']))
+        else False
+    ),
     axis=1
 )
 
-# keep only rows where both statuses found (optional)
-only_with_both = result[result['df2_status'].notna() & result['df3_status'].notna()] \
+# Optional: keep only rows where we actually have both statuses
+with_both = (
+    result[result['df2_status'].notna() & result['df3_status'].notna()]
     .sort_values(['status_match','df2_score','df3_score'], ascending=[False, False, False])
+)
 
-# peek
-print("Rows with both statuses:", len(only_with_both))
-only_with_both.head(20)
+print("Rows with both statuses:", len(with_both))
+print(with_both.head(20))
+
+# Optional: export
+# with_both.to_excel('status_match_by_name.xlsx', index=False)
+
