@@ -1,77 +1,93 @@
 from pathlib import Path
-import pdfplumber  # pip install pdfplumber
+import re
 
-def discover_slip_pdfs(final_slips_root: Path) -> list[Path]:
-    """
-    Busca PDFs dentro de cada subcarpeta de Final_Slips y los devuelve en orden.
-    Estructura esperada:
-      Final_Slips/
-        ACME_2025/
-          .../algo.pdf
-        FOOBAR_2025/
-          .../otro.pdf
-    """
-    final_slips_root = Path(final_slips_root)
-    pdfs: list[Path] = []
-    if not final_slips_root.exists():
-        return pdfs
+# --- Limpieza básica del texto ---
+def _clean_text(s: str) -> str:
+    if not s:
+        return ""
+    # Une palabras cortadas al final de línea: "insuran-\nce" -> "insurance"
+    s = re.sub(r"(\w)-\n(\w)", r"\1\2", s)
+    # Normaliza saltos/espacios
+    s = s.replace("\r", "")
+    s = re.sub(r"[ \t]+", " ", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)  # no más de 2 saltos seguidos
+    # Corrige ligaduras comunes (si aparecen)
+    s = s.replace("ﬁ", "fi").replace("ﬂ", "fl")
+    return s.strip()
 
-    # 1º nivel: subcarpetas del riesgo
-    for risk_dir in sorted([p for p in final_slips_root.iterdir() if p.is_dir()]):
-        # Dentro de cada subcarpeta, recoge PDFs (en cualquier subnivel)
-        found = list(risk_dir.rglob("*.pdf"))
-        # Si quieres SOLO 1 pdf por carpeta, descomenta la siguiente línea:
-        # found = found[:1]
-        pdfs.extend(sorted(found))
-    return pdfs
-
-def extract_text_pdf(path: Path) -> str:
-    """
-    Extrae texto de un PDF con pdfplumber (une todas las páginas).
-    Si alguna página falla, continúa con las demás.
-    """
-    texts = []
+# --- 1) Intento con PyMuPDF (fitz) ---
+def _extract_with_pymupdf(pdf_path: Path) -> str:
     try:
-        with pdfplumber.open(path) as pdf:
-            for page in pdf.pages:
-                try:
-                    t = page.extract_text() or ""
-                    texts.append(t)
-                except Exception:
-                    # página problemática: continúa
-                    continue
+        import fitz  # PyMuPDF
+        text_parts = []
+        with fitz.open(pdf_path) as doc:
+            for page in doc:
+                # TextPage (layout=True) mejora el orden de lectura
+                text_parts.append(page.get_text("text"))
+        return _clean_text("\n".join(text_parts))
     except Exception:
         return ""
-    return "\n".join(texts)
 
-# Conecta esto con el pipeline existente:
-def process_final_slips_and_write_excel(final_slips_root: Path, excel_out: Path, config_path: Path):
-    cfg = load_config(config_path)  # la función del andamio previo
-    pdfs = discover_slip_pdfs(final_slips_root)
-    rows = []
+# --- 2) Respaldo con pdfplumber (mejor en tablas/columnas) ---
+def _extract_with_pdfplumber(pdf_path: Path, grab_tables: bool = True) -> str:
+    try:
+        import pdfplumber
+        text_parts = []
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                t = page.extract_text() or ""
+                if grab_tables:
+                    try:
+                        tables = page.extract_tables()
+                        for tbl in tables or []:
+                            # convierte la tabla a texto tipo CSV simple
+                            lines = [", ".join([c or "" for c in row]) for row in tbl]
+                            if lines:
+                                t += "\n" + "\n".join(lines)
+                    except Exception:
+                        pass
+                text_parts.append(t)
+        return _clean_text("\n".join(text_parts))
+    except Exception:
+        return ""
 
-    for pdf_path in pdfs:
-        text = extract_text_pdf(pdf_path)
+# --- 3) (Opcional) OCR para PDFs escaneados ---
+def _extract_with_ocr(pdf_path: Path, dpi: int = 300) -> str:
+    try:
+        from pdf2image import convert_from_path
+        import pytesseract
+        pages = convert_from_path(str(pdf_path), dpi=dpi)
+        ocr_text = []
+        for img in pages:
+            ocr_text.append(pytesseract.image_to_string(img))
+        return _clean_text("\n".join(ocr_text))
+    except Exception:
+        return ""
 
-        # Detección de broker (por texto o por carpeta)
-        broker = detect_broker(text, pdf_path, cfg)
+def extract_text_pdf_robust(pdf_path: Path, use_ocr_if_needed: bool = False) -> str:
+    """
+    Lee el PDF y devuelve texto lo más completo posible.
+    Estrategia:
+      1) PyMuPDF
+      2) pdfplumber
+      3) (opcional) OCR si el texto es muy corto
+    """
+    # 1
+    txt = _extract_with_pymupdf(pdf_path)
+    if len(txt) >= 400:  # umbral empírico
+        return txt
 
-        # Parseo de campos (aquí luego metemos tus reglas por columna)
-        fields = parse_fields(text, broker, cfg)
+    # 2
+    alt = _extract_with_pdfplumber(pdf_path)
+    if len(alt) > len(txt):
+        txt = alt
+    if len(txt) >= 400:
+        return txt
 
-        # Clave de upsert: si no hay Everest ref todavía, usa hash del archivo
-        key = fields.get("Everest ref") or file_hash(pdf_path)
+    # 3 (solo si lo pides)
+    if use_ocr_if_needed:
+        ocr = _extract_with_ocr(pdf_path)
+        if len(ocr) > len(txt):
+            txt = ocr
 
-        # Nombre - Capa por comodidad si tenemos ambos
-        if not fields.get("Name - Layer"):
-            nm = fields.get("Account Name")
-            ly = fields.get("Layer")
-            if nm and ly:
-                fields["Name - Layer"] = f"{nm} - {ly}"
-
-        rows.append((str(key), fields))
-
-    # Lee, upserta y guarda
-    df = read_existing_excel(excel_out)
-    df = upsert_rows(df, rows)
-    save_excel(excel_out, df)
+    return txt
