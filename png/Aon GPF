@@ -1,0 +1,77 @@
+from pathlib import Path
+import pdfplumber  # pip install pdfplumber
+
+def discover_slip_pdfs(final_slips_root: Path) -> list[Path]:
+    """
+    Busca PDFs dentro de cada subcarpeta de Final_Slips y los devuelve en orden.
+    Estructura esperada:
+      Final_Slips/
+        ACME_2025/
+          .../algo.pdf
+        FOOBAR_2025/
+          .../otro.pdf
+    """
+    final_slips_root = Path(final_slips_root)
+    pdfs: list[Path] = []
+    if not final_slips_root.exists():
+        return pdfs
+
+    # 1º nivel: subcarpetas del riesgo
+    for risk_dir in sorted([p for p in final_slips_root.iterdir() if p.is_dir()]):
+        # Dentro de cada subcarpeta, recoge PDFs (en cualquier subnivel)
+        found = list(risk_dir.rglob("*.pdf"))
+        # Si quieres SOLO 1 pdf por carpeta, descomenta la siguiente línea:
+        # found = found[:1]
+        pdfs.extend(sorted(found))
+    return pdfs
+
+def extract_text_pdf(path: Path) -> str:
+    """
+    Extrae texto de un PDF con pdfplumber (une todas las páginas).
+    Si alguna página falla, continúa con las demás.
+    """
+    texts = []
+    try:
+        with pdfplumber.open(path) as pdf:
+            for page in pdf.pages:
+                try:
+                    t = page.extract_text() or ""
+                    texts.append(t)
+                except Exception:
+                    # página problemática: continúa
+                    continue
+    except Exception:
+        return ""
+    return "\n".join(texts)
+
+# Conecta esto con el pipeline existente:
+def process_final_slips_and_write_excel(final_slips_root: Path, excel_out: Path, config_path: Path):
+    cfg = load_config(config_path)  # la función del andamio previo
+    pdfs = discover_slip_pdfs(final_slips_root)
+    rows = []
+
+    for pdf_path in pdfs:
+        text = extract_text_pdf(pdf_path)
+
+        # Detección de broker (por texto o por carpeta)
+        broker = detect_broker(text, pdf_path, cfg)
+
+        # Parseo de campos (aquí luego metemos tus reglas por columna)
+        fields = parse_fields(text, broker, cfg)
+
+        # Clave de upsert: si no hay Everest ref todavía, usa hash del archivo
+        key = fields.get("Everest ref") or file_hash(pdf_path)
+
+        # Nombre - Capa por comodidad si tenemos ambos
+        if not fields.get("Name - Layer"):
+            nm = fields.get("Account Name")
+            ly = fields.get("Layer")
+            if nm and ly:
+                fields["Name - Layer"] = f"{nm} - {ly}"
+
+        rows.append((str(key), fields))
+
+    # Lee, upserta y guarda
+    df = read_existing_excel(excel_out)
+    df = upsert_rows(df, rows)
+    save_excel(excel_out, df)
