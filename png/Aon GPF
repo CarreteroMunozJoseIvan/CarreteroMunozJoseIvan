@@ -1,93 +1,36 @@
 from pathlib import Path
-import re
+import os
 
-# --- Limpieza básica del texto ---
-def _clean_text(s: str) -> str:
-    if not s:
-        return ""
-    # Une palabras cortadas al final de línea: "insuran-\nce" -> "insurance"
-    s = re.sub(r"(\w)-\n(\w)", r"\1\2", s)
-    # Normaliza saltos/espacios
-    s = s.replace("\r", "")
-    s = re.sub(r"[ \t]+", " ", s)
-    s = re.sub(r"\n{3,}", "\n\n", s)  # no más de 2 saltos seguidos
-    # Corrige ligaduras comunes (si aparecen)
-    s = s.replace("ﬁ", "fi").replace("ﬂ", "fl")
-    return s.strip()
+# 1️⃣ Define your base directory (current_path works fine)
+base_dir = Path(r"C:\Users\imunoz011\OneDrive - Everest Reinsurance\Documents\Aon GPF Automation")
 
-# --- 1) Intento con PyMuPDF (fitz) ---
-def _extract_with_pymupdf(pdf_path: Path) -> str:
-    try:
-        import fitz  # PyMuPDF
-        text_parts = []
-        with fitz.open(pdf_path) as doc:
-            for page in doc:
-                # TextPage (layout=True) mejora el orden de lectura
-                text_parts.append(page.get_text("text"))
-        return _clean_text("\n".join(text_parts))
-    except Exception:
-        return ""
+# 2️⃣ Move into the "Final_Slips" folder
+final_slips_dir = base_dir / "Final_Slips"
 
-# --- 2) Respaldo con pdfplumber (mejor en tablas/columnas) ---
-def _extract_with_pdfplumber(pdf_path: Path, grab_tables: bool = True) -> str:
-    try:
-        import pdfplumber
-        text_parts = []
-        with pdfplumber.open(pdf_path) as pdf:
-            for page in pdf.pages:
-                t = page.extract_text() or ""
-                if grab_tables:
-                    try:
-                        tables = page.extract_tables()
-                        for tbl in tables or []:
-                            # convierte la tabla a texto tipo CSV simple
-                            lines = [", ".join([c or "" for c in row]) for row in tbl]
-                            if lines:
-                                t += "\n" + "\n".join(lines)
-                    except Exception:
-                        pass
-                text_parts.append(t)
-        return _clean_text("\n".join(text_parts))
-    except Exception:
-        return ""
+# Check that it exists
+if not final_slips_dir.exists():
+    raise FileNotFoundError(f"❌ Folder not found: {final_slips_dir}")
 
-# --- 3) (Opcional) OCR para PDFs escaneados ---
-def _extract_with_ocr(pdf_path: Path, dpi: int = 300) -> str:
-    try:
-        from pdf2image import convert_from_path
-        import pytesseract
-        pages = convert_from_path(str(pdf_path), dpi=dpi)
-        ocr_text = []
-        for img in pages:
-            ocr_text.append(pytesseract.image_to_string(img))
-        return _clean_text("\n".join(ocr_text))
-    except Exception:
-        return ""
+print(f"📁 Scanning base folder: {final_slips_dir}")
 
-def extract_text_pdf_robust(pdf_path: Path, use_ocr_if_needed: bool = False) -> str:
-    """
-    Lee el PDF y devuelve texto lo más completo posible.
-    Estrategia:
-      1) PyMuPDF
-      2) pdfplumber
-      3) (opcional) OCR si el texto es muy corto
-    """
-    # 1
-    txt = _extract_with_pymupdf(pdf_path)
-    if len(txt) >= 400:  # umbral empírico
-        return txt
+# 3️⃣ Loop through every subfolder (each slip folder)
+for slip_folder in sorted(final_slips_dir.iterdir()):
+    if slip_folder.is_dir():
+        print(f"\n🔹 Folder: {slip_folder.name}")
 
-    # 2
-    alt = _extract_with_pdfplumber(pdf_path)
-    if len(alt) > len(txt):
-        txt = alt
-    if len(txt) >= 400:
-        return txt
+        # 4️⃣ Get all PDFs inside this folder and any subfolders
+        pdf_files = list(slip_folder.rglob("*.pdf"))  # rglob = recursive
+        if not pdf_files:
+            print("   ⚠️ No PDFs found here")
+            continue
 
-    # 3 (solo si lo pides)
-    if use_ocr_if_needed:
-        ocr = _extract_with_ocr(pdf_path)
-        if len(ocr) > len(txt):
-            txt = ocr
+        for pdf_path in pdf_files:
+            full_path = pdf_path.resolve()  # ✅ full absolute path
+            print(f"   → Found PDF: {full_path.name}")
+            print(f"     Full path: {full_path}")
 
-    return txt
+            # 5️⃣ Now pass it to your text extractor
+            text = extract_text_pdf_robust(full_path)
+
+            # Optional: preview how much text was extracted
+            print(f"     Extracted {len(text)} characters\n")
