@@ -1,56 +1,67 @@
 import re
 
-def extract_name_and_layer(text: str):
+def extract_name_and_layer_aon_gpf(text: str):
     """
-    Devuelve (name, layer) o (None, None) si no los encuentra.
-
-    Soporta, entre otros, los formatos:
-    - Aon GPF – new Addl - Poste Italiane SpA - PTXIN2502697 - 100m x 50m - ARK - Unipol Cedent
-    - Aon GPF – new - Eikos Simah Risk Group 2024 - PTINT2506808 - AIG GPF + ACT - ZAR 2.5bn xs 30m
+    Busca la línea tipo:
+      - 'Aon GPF B new ONE NEW ZEALAND GROUP LIMITED - 200m xs 100m - TAL'
+      - 'Aon GPF - new Addl - Poste Italiane SpA - PTXIN2502697 - 100m x 50m - ARK - Unipol Cedent'
+      - 'Aon GPF - new - Eikos Simah Risk Group 2024 - PTINT2506808 - AIG GPF + ACT - ZAR 2.5bn xs 30m.'
+    y devuelve (nombre, layer).
     """
 
-    # Limpiamos líneas vacías
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    # 1) Busca una línea que contenga 'Aon GPF' y varios '-'
+    line = None
+    for ln in text.splitlines():
+        if "Aon GPF" in ln and "-" in ln:
+            line = ln
+            break
+    if line is None:
+        return None, None
 
-    # ===== CASO AON GPF (los ejemplos de las fotos) =====
-    for line in lines:
-        if "Aon GPF" in line:
-            # Partimos por "-" y limpiamos espacios y guiones largos
-            parts = [p.strip(" -\u2013") for p in line.split("-") if p.strip(" -\u2013")]
-            if len(parts) < 3:
+    # 2) Partimos la línea por '-' para reutilizar en todos los planes
+    parts = [p.strip() for p in line.split("-") if p.strip()]
+
+    # === PLAN 1: formatos nuevos con nº de póliza PTXXXX... ===
+    pol_idx = None
+    for i, p in enumerate(parts):
+        if re.search(r"\bPT[A-Z0-9]+", p):
+            pol_idx = i
+            break
+
+    if pol_idx is not None and pol_idx >= 1:
+        # nombre = parte anterior a la póliza
+        name_raw = parts[pol_idx - 1].strip()
+
+        # layer = primer bloque después de la póliza que contenga "x" o "xs"
+        layer_raw = None
+        for p in parts[pol_idx + 1:]:
+            if re.search(r"\b(?:x|xs)\b", p, flags=re.I):
+                layer_raw = p.strip().rstrip(".")
                 break
 
-            # Nombre = segundo bloque
-            name = parts[1]
+        if name_raw and layer_raw:
+            return name_raw, layer_raw
+        # si algo falla, caemos al plan antiguo
 
-            # Buscamos el bloque del nº de póliza tipo PTXIN2502697 / PTINT2506808...
-            pol_idx = None
-            for i, p in enumerate(parts):
-                if re.search(r"\bPT[A-Z0-9]+", p):
-                    pol_idx = i
-                    break
+    # === PLAN 2: formato antiguo '... new NOMBRE - layer - ...' ===
+    m = re.search(r"new\s+(.+?)\s*-\s*([^-\n\r]+)\s*-\s*", line, flags=re.I)
+    if not m:
+        # Plan B: separar por '-' y coger las partes centrales
+        if len(parts) >= 3:
+            # algo tipo:
+            # ['Aon GPF B new ONE NEW ZEALAND GROUP LIMITED', '200m xs 100m', 'TAL']
+            name_part = parts[0]
+            # saca el nombre quitando el prefijo '... new '
+            name_part = re.sub(r"^.*new\s+", "", name_part, flags=re.I)
+            name_raw = name_part.strip()
+            layer_raw = parts[1].strip()
+        else:
+            return None, None
+    else:
+        name_raw = m.group(1).strip()
+        layer_raw = m.group(2).strip()
 
-            layer = None
-            if pol_idx is not None:
-                # Desde después de la póliza en adelante buscamos algo con "x" o "xs"
-                for p in parts[pol_idx + 1:]:
-                    if re.search(r"\b(xs?|x)\b", p, re.IGNORECASE):
-                        layer = p
-                        break
+    if not name_raw or not layer_raw:
+        return None, None
 
-                # Si no hemos detectado por "x/xs", cogemos el último bloque como layer
-                if layer is None and len(parts) > pol_idx + 1:
-                    layer = parts[-1]
-
-            return name.strip(), layer.strip() if layer else None
-
-    # ===== Fallback genérico por si viene otro tipo de email =====
-    for line in lines:
-        if " - " in line:
-            parts = [p.strip() for p in line.split(" - ") if p.strip()]
-            if len(parts) >= 2:
-                name = parts[0]
-                layer = parts[-1]
-                return name, layer
-
-    return None, None
+    return name_raw, layer_raw
