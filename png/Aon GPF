@@ -2,11 +2,11 @@ import re
 
 def extract_name_and_layer_aon_gpf(text: str):
     """
-    Busca la línea tipo:
-      - 'Aon GPF B new ONE NEW ZEALAND GROUP LIMITED - 200m xs 100m - TAL'
-      - 'Aon GPF - new Addl - Poste Italiane SpA - PTXIN2502697 - 100m x 50m - ARK - Unipol Cedent'
-      - 'Aon GPF - new - Eikos Simah Risk Group 2024 - PTINT2506808 - AIG GPF + ACT - ZAR 2.5bn xs 30m.'
-    y devuelve (nombre, layer).
+    Soporta:
+      1) Aon GPF B new ONE NEW ZEALAND GROUP LIMITED - 200m xs 100m - TAL
+      2) Aon GPF - new Addl - Poste Italiane SpA - PTXIN2502697 - 100m x 50m - ARK - Unipol Cedent
+      3) Aon GPF - new - Eikos Simah Risk Group 2024 - PTINT2506808 - AIG GPF + ACT - ZAR 2.5bn xs 30m.
+    Devuelve (name_raw, layer_raw)
     """
 
     # 1) Busca una línea que contenga 'Aon GPF' y varios '-'
@@ -18,40 +18,55 @@ def extract_name_and_layer_aon_gpf(text: str):
     if line is None:
         return None, None
 
-    # 2) Partimos la línea por '-' para reutilizar en todos los planes
+    # Partimos siempre por '-'
     parts = [p.strip() for p in line.split("-") if p.strip()]
+    # Ejemplo Addl:
+    # ['Aon GPF', 'new Addl', 'Poste Italiane SpA', 'PTXIN2502697',
+    #  '100m x 50m', 'ARK', 'Unipol Cedent']
+    # Ejemplo PT sin Addl:
+    # ['Aon GPF', 'new', 'Eikos Simah Risk Group 2024', 'PTINT2506808',
+    #  'AIG GPF + ACT', 'ZAR 2.5bn xs 30m.']
 
-    # === PLAN 1: formatos nuevos con nº de póliza PTXXXX... ===
-    pol_idx = None
-    for i, p in enumerate(parts):
-        if re.search(r"\bPT[A-Z0-9]+", p):
-            pol_idx = i
-            break
+    # === CASO 2: '... - new Addl - NOMBRE - PT... - LAYER - ...' ===
+    if any("Addl" in p for p in parts):
+        if len(parts) < 5:
+            return None, None
 
-    if pol_idx is not None and pol_idx >= 1:
-        # nombre = parte anterior a la póliza
-        name_raw = parts[pol_idx - 1].strip()
+        # según lo que has dicho:
+        # - nombre = lo que hay en el 3º guion  -> parts[2]
+        # - layer  = lo que hay en el 4º guion -> parts[4] (saltando el PT)
+        name_raw = parts[2].strip()
+        layer_raw = parts[4].strip().rstrip(".")
 
-        # layer = primer bloque después de la póliza que contenga "x" o "xs"
-        layer_raw = None
-        for p in parts[pol_idx + 1:]:
-            if re.search(r"\b(?:x|xs)\b", p, flags=re.I):
-                layer_raw = p.strip().rstrip(".")
-                break
+        if not name_raw or not layer_raw:
+            return None, None
+        return name_raw, layer_raw
 
-        if name_raw and layer_raw:
-            return name_raw, layer_raw
-        # si algo falla, caemos al plan antiguo
+    # === CASO 3: '... - new - NOMBRE - PT... - ... - LAYER' ===
+    # buscamos que haya un bloque con 'PT...'
+    if re.search(r"\bPT[A-Z0-9]+", line):
+        # estructura esperada:
+        # [0:'Aon GPF', 1:'new', 2:NOMBRE, 3:PT..., 4:..., 5:LAYER]
+        if len(parts) < 4:
+            return None, None
 
-    # === PLAN 2: formato antiguo '... new NOMBRE - layer - ...' ===
+        # nombre = 2º después de 'new'  -> parts[2]
+        name_raw = parts[2].strip()
+        # layer = último bloque (último '-') -> parts[-1]
+        layer_raw = parts[-1].strip().rstrip(".")
+
+        if not name_raw or not layer_raw:
+            return None, None
+        return name_raw, layer_raw
+
+    # === CASO 1: formato antiguo '... new NOMBRE - LAYER - ...' ===
     m = re.search(r"new\s+(.+?)\s*-\s*([^-\n\r]+)\s*-\s*", line, flags=re.I)
     if not m:
         # Plan B: separar por '-' y coger las partes centrales
         if len(parts) >= 3:
-            # algo tipo:
             # ['Aon GPF B new ONE NEW ZEALAND GROUP LIMITED', '200m xs 100m', 'TAL']
             name_part = parts[0]
-            # saca el nombre quitando el prefijo '... new '
+            # quitamos todo antes de 'new '
             name_part = re.sub(r"^.*new\s+", "", name_part, flags=re.I)
             name_raw = name_part.strip()
             layer_raw = parts[1].strip()
