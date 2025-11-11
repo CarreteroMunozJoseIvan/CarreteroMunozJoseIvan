@@ -2,79 +2,62 @@ import re
 
 def extract_name_and_layer_aon_gpf(text: str):
     """
-    Soporta:
-      1) Aon GPF B new ONE NEW ZEALAND GROUP LIMITED - 200m xs 100m - TAL
-      2) Aon GPF - new Addl - Poste Italiane SpA - PTXIN2502697 - 100m x 50m - ARK - Unipol Cedent
-      3) Aon GPF - new - Eikos Simah Risk Group 2024 - PTINT2506808 - AIG GPF + ACT - ZAR 2.5bn xs 30m.
-    Devuelve (name_raw, layer_raw)
+    Extrae (name, layer) de líneas tipo:
+      - Aon GPF B new ONE NEW ZEALAND GROUP LIMITED - 200m xs 100m - TAL
+      - Aon GPF - new Addl - Poste Italiane SpA - PTXIN2502697 - 100m x 50m - ARK - Unipol Cedent
+      - Aon GPF - new - Eikos Simah Risk Group 2024 - PTINT2506808 - AIG GPF + ACT - ZAR 2.5bn xs 30m.
+      - Aon GPF – new ETG COMMODITIES INC - PTPAC2510488 - Primary CAD 25m - Brit GPF
     """
 
-    # 1) Busca una línea que contenga 'Aon GPF' y varios '-'
+    # 1) Buscar la línea relevante (la que contiene 'Aon GPF' y 'new')
     line = None
     for ln in text.splitlines():
-        if "Aon GPF" in ln and "-" in ln:
-            line = ln
+        if "Aon GPF" in ln and "new" in ln:
+            line = ln.strip()
             break
     if line is None:
         return None, None
 
-    # Partimos siempre por '-'
-    parts = [p.strip() for p in line.split("-") if p.strip()]
-    # Ejemplo Addl:
-    # ['Aon GPF', 'new Addl', 'Poste Italiane SpA', 'PTXIN2502697',
-    #  '100m x 50m', 'ARK', 'Unipol Cedent']
-    # Ejemplo PT sin Addl:
-    # ['Aon GPF', 'new', 'Eikos Simah Risk Group 2024', 'PTINT2506808',
-    #  'AIG GPF + ACT', 'ZAR 2.5bn xs 30m.']
+    # Normalizar guiones largos a "-" para que el split funcione
+    line = re.sub(r"[–—]", "-", line)
 
-    # === CASO 2: '... - new Addl - NOMBRE - PT... - LAYER - ...' ===
-    if any("Addl" in p for p in parts):
-        if len(parts) < 5:
-            return None, None
-
-        # según lo que has dicho:
-        # - nombre = lo que hay en el 3º guion  -> parts[2]
-        # - layer  = lo que hay en el 4º guion -> parts[4] (saltando el PT)
-        name_raw = parts[2].strip()
-        layer_raw = parts[4].strip().rstrip(".")
-
-        if not name_raw or not layer_raw:
-            return None, None
-        return name_raw, layer_raw
-
-    # === CASO 3: '... - new - NOMBRE - PT... - ... - LAYER' ===
-    # buscamos que haya un bloque con 'PT...'
-    if re.search(r"\bPT[A-Z0-9]+", line):
-        # estructura esperada:
-        # [0:'Aon GPF', 1:'new', 2:NOMBRE, 3:PT..., 4:..., 5:LAYER]
-        if len(parts) < 4:
-            return None, None
-
-        # nombre = 2º después de 'new'  -> parts[2]
-        name_raw = parts[2].strip()
-        # layer = último bloque (último '-') -> parts[-1]
-        layer_raw = parts[-1].strip().rstrip(".")
-
-        if not name_raw or not layer_raw:
-            return None, None
-        return name_raw, layer_raw
-
-    # === CASO 1: formato antiguo '... new NOMBRE - LAYER - ...' ===
-    m = re.search(r"new\s+(.+?)\s*-\s*([^-\n\r]+)\s*-\s*", line, flags=re.I)
+    # 2) Sacar el NOMBRE:
+    #    todo lo que va después de "new"/"new Addl" (con o sin "-") hasta el próximo "-"
+    m = re.search(r"new(?:\s+Addl)?\s*-?\s*(.+?)\s*-\s*(.+)", line, flags=re.I)
     if not m:
-        # Plan B: separar por '-' y coger las partes centrales
-        if len(parts) >= 3:
-            # ['Aon GPF B new ONE NEW ZEALAND GROUP LIMITED', '200m xs 100m', 'TAL']
-            name_part = parts[0]
-            # quitamos todo antes de 'new '
-            name_part = re.sub(r"^.*new\s+", "", name_part, flags=re.I)
-            name_raw = name_part.strip()
-            layer_raw = parts[1].strip()
-        else:
-            return None, None
-    else:
-        name_raw = m.group(1).strip()
-        layer_raw = m.group(2).strip()
+        return None, None
+
+    name_raw = m.group(1).strip()   # lo que hay entre 'new...' y el siguiente '-'
+    rest = m.group(2)               # el resto de la cadena después del nombre
+
+    # 3) Sacar el LAYER del resto buscando patrones típicos
+    #    ejemplo rest:
+    #    'PTXIN2502697 - 100m x 50m - ARK - Unipol Cedent'
+    #    'PTINT2506808 - AIG GPF + ACT - ZAR 2.5bn xs 30m.'
+    #    'PTPAC2510488 - Primary CAD 25m - Brit GPF'
+    #    '200m xs 100m - TAL'
+    segments = [s.strip().rstrip(".") for s in rest.split("-") if s.strip()]
+
+    layer_raw = None
+
+    # Prioridad 1: segmentos con xs/x / número+m (100m) → típico layer
+    for seg in segments:
+        if re.search(r"\bxs?\b", seg, flags=re.I):
+            layer_raw = seg
+            break
+        if re.search(r"\b\d+\s*m\b", seg, flags=re.I):  # 25m, 100m, etc.
+            layer_raw = seg
+            # no break aquí por si encontramos uno con xs más adelante, pero puedes dejarlo
+    # Prioridad 2: Primary / Excess
+    if layer_raw is None:
+        for seg in segments:
+            if re.search(r"\bPrimary\b|\bExcess\b", seg, flags=re.I):
+                layer_raw = seg
+                break
+
+    # Fallback: si no hemos encontrado nada, coger el segundo o primer segmento
+    if layer_raw is None and segments:
+        layer_raw = segments[1] if len(segments) >= 2 else segments[0]
 
     if not name_raw or not layer_raw:
         return None, None
