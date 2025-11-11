@@ -1,26 +1,29 @@
+import re
+
 def extract_name_and_layer(text: str):
+    """
+    Devuelve (name, layer) o (None, None) si no los encuentra.
+
+    Soporta, entre otros, los formatos:
+    - Aon GPF – new Addl - Poste Italiane SpA - PTXIN2502697 - 100m x 50m - ARK - Unipol Cedent
+    - Aon GPF – new - Eikos Simah Risk Group 2024 - PTINT2506808 - AIG GPF + ACT - ZAR 2.5bn xs 30m
+    """
+
+    # Limpiamos líneas vacías
     lines = [l.strip() for l in text.splitlines() if l.strip()]
 
-    # === CASO 1: tu primera estructura "Nombre - layer" ===
+    # ===== CASO AON GPF (los ejemplos de las fotos) =====
     for line in lines:
         if "Aon GPF" in line:
-            continue  # lo manejamos en el caso 2
-        if " - " in line:
-            parts = [p.strip() for p in line.split(" - ") if p.strip()]
-            if len(parts) >= 2:
-                name = parts[0]
-                layer = parts[-1]
-                return name, layer
-
-    # === CASO 2: correos Aon GPF (los dos ejemplos nuevos) ===
-    for line in lines:
-        if "Aon GPF" in line:
+            # Partimos por "-" y limpiamos espacios y guiones largos
             parts = [p.strip(" -\u2013") for p in line.split("-") if p.strip(" -\u2013")]
             if len(parts) < 3:
                 break
 
-            name = parts[1]  # segundo bloque
+            # Nombre = segundo bloque
+            name = parts[1]
 
+            # Buscamos el bloque del nº de póliza tipo PTXIN2502697 / PTINT2506808...
             pol_idx = None
             for i, p in enumerate(parts):
                 if re.search(r"\bPT[A-Z0-9]+", p):
@@ -29,13 +32,25 @@ def extract_name_and_layer(text: str):
 
             layer = None
             if pol_idx is not None:
+                # Desde después de la póliza en adelante buscamos algo con "x" o "xs"
                 for p in parts[pol_idx + 1:]:
                     if re.search(r"\b(xs?|x)\b", p, re.IGNORECASE):
                         layer = p
                         break
+
+                # Si no hemos detectado por "x/xs", cogemos el último bloque como layer
                 if layer is None and len(parts) > pol_idx + 1:
                     layer = parts[-1]
 
             return name.strip(), layer.strip() if layer else None
+
+    # ===== Fallback genérico por si viene otro tipo de email =====
+    for line in lines:
+        if " - " in line:
+            parts = [p.strip() for p in line.split(" - ") if p.strip()]
+            if len(parts) >= 2:
+                name = parts[0]
+                layer = parts[-1]
+                return name, layer
 
     return None, None
