@@ -6,32 +6,44 @@ import pandas as pd
 FINAL_SLIPS_DIR = r"C:\Users\TU_USUARIO\Documents\Final_Slips"  # <-- cámbiala
 
 
-# ----------------------------------------------------------------------
-# 1) Regla para identificar cuál archivo es el SLIP dentro de cada carpeta
-# ----------------------------------------------------------------------
+# ========= CLASIFICADORES =========
+
 def es_slip(nombre_archivo: str) -> bool:
     n = nombre_archivo.lower()
 
-    # Slip real (por nombre)
     if "slip" in n or "declaration" in n:
         return True
 
-    # Archivos que contienen el código del broker PTXXXX
     if re.search(r"\bpt[a-z0-9]+\b", n):
         return True
 
-    # Archivos con capa dentro del nombre (ej. "200m xs 100m")
     if re.search(r"\d+\s*m.*?(x|xs)\s*\d+\s*m", n):
         return True
 
     return False
 
 
-# ----------------------------------------------------------------------
-# 2) Función principal que recorre Final_Slips y genera el DataFrame
-# ----------------------------------------------------------------------
-def listar_final_slips(base_dir: str) -> pd.DataFrame:
+def es_sov(nombre_archivo: str) -> bool:
+    return bool(re.search(r"\bsov\b|values|tiv", nombre_archivo.lower()))
 
+
+def es_claims(nombre_archivo: str) -> bool:
+    return bool(re.search(r"claim", nombre_archivo.lower()))
+
+
+def clasificar_archivo(nombre_archivo: str) -> str:
+    if es_slip(nombre_archivo):
+        return "Slip"
+    if es_sov(nombre_archivo):
+        return "SOV"
+    if es_claims(nombre_archivo):
+        return "Claims"
+    return "Otro"
+
+
+# ========= FUNCIÓN PRINCIPAL =========
+
+def analizar_final_slips(base_dir: str):
     registros = []
 
     for carpeta in os.listdir(base_dir):
@@ -41,35 +53,55 @@ def listar_final_slips(base_dir: str) -> pd.DataFrame:
 
         for fichero in os.listdir(ruta_carpeta):
             ruta_fichero = os.path.join(ruta_carpeta, fichero)
-
             if not os.path.isfile(ruta_fichero):
                 continue
 
-            nombre_archivo = fichero
             ext = os.path.splitext(fichero)[1].lower()
-
-            # Tipos de archivos permitidos
             if ext not in (".pdf", ".xlsx", ".xls", ".xlsm", ".csv"):
                 continue
 
+            tipo = clasificar_archivo(fichero)
+
             registros.append({
                 "CarpetaCuenta": carpeta,
-                "NombreArchivo": nombre_archivo,
+                "Archivo": fichero,
+                "Tipo": tipo,
                 "Extension": ext,
-                "EsSlip": es_slip(nombre_archivo),
                 "RutaCompleta": ruta_fichero
             })
 
     df = pd.DataFrame(registros)
 
-    # Ordenar: primero slip, luego resto
-    df = df.sort_values(by=["CarpetaCuenta", "EsSlip"], ascending=[True, False])
+    # Ordenamos por carpeta y tipo (Slip primero)
+    orden_tipo = {"Slip": 0, "SOV": 1, "Claims": 2, "Otro": 3}
+    df["OrdenTipo"] = df["Tipo"].map(orden_tipo)
+    df = df.sort_values(by=["CarpetaCuenta", "OrdenTipo"]).drop(columns=["OrdenTipo"])
 
-    return df.reset_index(drop=True)
+    # ==== RESUMEN POR CARPETA ====
+    resumen = (
+        df.groupby("CarpetaCuenta")["Tipo"]
+        .value_counts()
+        .unstack(fill_value=0)
+        .reset_index()
+    )
+
+    # Forzar columnas aunque no existan aún
+    for col in ["Slip", "SOV", "Claims", "Otro"]:
+        if col not in resumen.columns:
+            resumen[col] = 0
+
+    resumen = resumen[["CarpetaCuenta", "Slip", "SOV", "Claims", "Otro"]]
+
+    return df, resumen
 
 
-# ----------------------------------------------------------------------
-# 3) Ejecutar y mostrar el DataFrame
-# ----------------------------------------------------------------------
-df_archivos = listar_final_slips(FINAL_SLIPS_DIR)
+# ========= EJECUCIÓN =========
+
+df_archivos, df_resumen = analizar_final_slips(FINAL_SLIPS_DIR)
+
+print("\n================= DETALLE COMPLETO =================")
 print(df_archivos)
+
+print("\n================= RESUMEN POR CUENTA =================")
+print(df_resumen)
+
