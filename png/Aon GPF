@@ -1,271 +1,51 @@
 import os
-import re
-import shutil
-import datetime
-import pdfplumber
+import pandas as pd
 
-# ==== CONFIGURA AQUÍ TUS RUTAS ====
-DOWNLOADS_DIR = r"C:\Users\TU_USUARIO\Downloads"
-FINAL_SLIPS_DIR = r"C:\Users\TU_USUARIO\Documents\Final_Slips"
+# Ruta base de tus cuentas
+FINAL_SLIPS_DIR = r"C:\Users\TU_USUARIO\Documents\Final_Slips"  # <- cámbiala
 
-MAX_GROUP_TAIL = 3  # slip + hasta 3 archivos (SOV / Claims)
-
-
-# ========= HELPERS =========
-
-def read_pdf_text(file_path, max_pages=6):
-    """Lee las primeras páginas del PDF y devuelve todo el texto."""
-    text_chunks = []
-    with pdfplumber.open(file_path) as pdf:
-        for i, page in enumerate(pdf.pages):
-            if i >= max_pages:
-                break
-            t = page.extract_text() or ""
-            text_chunks.append(t)
-    return "\n".join(text_chunks)
-
-
-def _to_number(num_str):
-    s = num_str.replace(",", "").strip()
-    try:
-        return float(s)
-    except ValueError:
-        return None
-
-
-def _short_amount(n):
-    if n is None:
-        return ""
-    if n >= 1_000_000_000:
-        return f"{n / 1_000_000_000:g}bn"
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:g}m"
-    return f"{n:g}"
-
-
-def parse_insured_name(text):
-    """Busca ORIGINAL INSURED / Name: y devuelve solo el nombre."""
-    # compactar espacios
-    t = re.sub(r"[^\S\r\n]+", " ", text)
-
-    m = re.search(r"ORIGINAL\s+INSURED.*?Name:\s*(.+)", t,
-                  flags=re.I | re.S)
-    if m:
-        after = m.group(1)
-        first_line = after.strip().splitlines()[0].strip(" :;-")
-        if first_line:
-            return first_line
-
-    # fallbacks típicos
-    for pat in [
-        r"\bInsured\s*:\s*(.+)",
-        r"\bAssured\s*:\s*(.+)",
-        r"\bOriginal\s+Insured\s*:\s*(.+)",
-    ]:
-        m = re.search(pat, t, flags=re.I)
-        if m:
-            return m.group(1).strip().splitlines()[0].strip(" :;-")
-
-    return None
-
-
-def parse_layer(text):
-    """Intenta sacar el layer del bloque SUM (RE)INSURED... In excess of..."""
-    # patrón principal
-    pat = re.compile(
-        r"SUM\s*\(?RE\)?INSURED.*?"
-        r"([A-Z]{3})\s*([\d,]+(?:\.\d+)?)"
-        r".*?In\s+excess\s+of\s+"
-        r"([A-Z]{3})?\s*([\d,]+(?:\.\d+)?)",
-        flags=re.I | re.S,
-    )
-    m = pat.search(text)
-    if m:
-        c1, s1, c2, s2 = m.groups()
-        n1, n2 = _to_number(s1), _to_number(s2)
-        c2 = c2 or c1
-        return f"{c1} {_short_amount(n1)} xs {c2} {_short_amount(n2)}"
-
-    # fallback: Primary / Excess
-    m = re.search(
-        r"\b(Primary|Excess)\b\s*([A-Z]{3})?\s*([\d,]+(?:\.\d+)?m?)",
-        text, flags=re.I,
-    )
-    if m:
-        kind, cur, amt = m.groups()
-        cur = (cur or "").upper()
-        return f"{kind.title()} {cur} {amt}".strip()
-
-    # fallback: 'USD 200m xs 100m' en una sola línea
-    m = re.search(
-        r"([A-Z]{3})\s*([\d,]+(?:\.\d+)?)\s*(?:m|million)?\s*(?:x|xs)\s*([A-Z]{3})?\s*([\d,]+(?:\.\d+)?)",
-        text, flags=re.I,
-    )
-    if m:
-        c1, s1, c2, s2 = m.groups()
-        n1, n2 = _to_number(s1), _to_number(s2)
-        c2 = c2 or c1
-        return f"{c1} {_short_amount(n1)} xs {c2} {_short_amount(n2)}"
-
-    return None
-
-
-def extract_from_slip_pdf(file_path):
-    """Devuelve (insured_name, layer) a partir del PDF del slip."""
-    txt = read_pdf_text(file_path, max_pages=6)
-    name = parse_insured_name(txt)
-    layer = parse_layer(txt)
-    return name, layer
-
-
-def contains_pt(filename):
-    return re.search(r"\bPT[A-Z0-9]+\b", filename) is not None
-
-
-def is_anchor(filename, ext):
-    """Decide si un archivo es el 'slip ancla' de una cuenta."""
-    name_lower = filename.lower()
-
-    # tipo de archivo: Slip casi siempre será PDF
-    if ext not in [".pdf", ".doc", ".docx"]:
-        # excepciones: nombres con 'slip' o 'declaration'
-        if "slip" not in name_lower and "declaration" not in name_lower:
-            return False
-
-    # criterios
-    if contains_pt(filename):
+def es_slip(nombre_archivo: str) -> bool:
+    """Heurística simple para marcar qué archivo es el slip."""
+    n = nombre_archivo.lower()
+    if n.startswith("pt"):
         return True
-    if re.search(r"\bslip\b|\bdeclaration\b", name_lower, flags=re.I):
-        return True
-    if re.search(r"\b\d+\s*m.*\b(x|xs)\b|\bprimary\b|\bexcess\b",
-                 filename, flags=re.I):
+    if " slip" in n or "slip " in n or "declaration" in n:
         return True
     return False
 
+def listar_final_slips(base_dir: str) -> pd.DataFrame:
+    registros = []
 
-def sanitize_folder_name(name):
-    """Quita caracteres ilegales de nombre de carpeta en Windows."""
-    name = name.strip()
-    # quitar caracteres no permitidos: \ / : * ? " < > |
-    return re.sub(r'[\\/:*?"<>|]', "", name)
-
-
-def ensure_target_folder(insured_name, layer):
-    folder_name = f"{insured_name} - {layer}".strip()
-    folder_name = sanitize_folder_name(folder_name)
-    full_path = os.path.join(FINAL_SLIPS_DIR, folder_name)
-    os.makedirs(full_path, exist_ok=True)
-    return full_path
-
-
-def move_with_rename(src, dst_folder):
-    base = os.path.basename(src)
-    dst = os.path.join(dst_folder, base)
-
-    if not os.path.exists(dst):
-        shutil.move(src, dst)
-        return dst
-
-    # si existe, añadir sufijo (1), (2)...
-    name, ext = os.path.splitext(base)
-    k = 1
-    while True:
-        cand = os.path.join(dst_folder, f"{name} ({k}){ext}")
-        if not os.path.exists(cand):
-            shutil.move(src, cand)
-            return cand
-        k += 1
-
-
-# ========= PROCESO PRINCIPAL =========
-
-def dispatch_downloads_today():
-    today = datetime.date.today()
-
-    # 1) listar archivos de hoy en Downloads
-    file_infos = []
-    for fname in os.listdir(DOWNLOADS_DIR):
-        full = os.path.join(DOWNLOADS_DIR, fname)
-        if not os.path.isfile(full):
+    # Recorremos SOLO las subcarpetas directas de Final_Slips
+    for carpeta in os.listdir(base_dir):
+        ruta_carpeta = os.path.join(base_dir, carpeta)
+        if not os.path.isdir(ruta_carpeta):
             continue
-        mtime = os.path.getmtime(full)
-        file_date = datetime.date.fromtimestamp(mtime)
-        if file_date == today:
-            file_infos.append({
-                "name": fname,
-                "path": full,
-                "mtime": mtime,
+
+        for fichero in os.listdir(ruta_carpeta):
+            ruta_fichero = os.path.join(ruta_carpeta, fichero)
+
+            if not os.path.isfile(ruta_fichero):
+                continue
+
+            ext = os.path.splitext(fichero)[1].lower()
+
+            # Nos quedamos con PDF y Excel (añade más si quieres)
+            if ext not in (".pdf", ".xlsx", ".xls"):
+                continue
+
+            registros.append({
+                "CarpetaCuenta": carpeta,
+                "NombreArchivo": fichero,
+                "Extension": ext,
+                "EsSlip": es_slip(fichero),
+                "RutaCompleta": ruta_fichero
             })
 
-    # ordenarlos por hora de descarga
-    file_infos.sort(key=lambda x: x["mtime"])
-
-    i = 0
-    while i < len(file_infos):
-        info = file_infos[i]
-        fname = info["name"]
-        fpath = info["path"]
-        ext = os.path.splitext(fname)[1].lower()
-
-        # ¿Es slip ancla?
-        if is_anchor(fname, ext):
-            print(f"\n🔎 Ancla detectada: {fname}")
-
-            insured_name, layer = extract_from_slip_pdf(fpath)
-
-            # fallback por nombre de archivo si no lo saca del PDF
-            if not insured_name:
-                # e.g. "One NZ - PTPAC2509239 - 200m xs 100m ..."
-                m = re.search(r"^(.*?)-\s*PT[A-Z0-9]+", fname)
-                if m:
-                    insured_name = m.group(1).strip(" -_")
-                else:
-                    insured_name = os.path.splitext(fname)[0].strip()
-
-            if not layer:
-                # intentar layer en el nombre del archivo
-                m = re.search(
-                    r"(\b\d+\s*m\s*(?:x|xs)\s*\d+\s*m\b|\bPrimary\b.*?\b\d+\s*m\b|\bExcess\b.*?\b\d+\s*m\b)",
-                    fname, flags=re.I,
-                )
-                if m:
-                    layer = m.group(1).strip()
-                else:
-                    layer = "layer"
-
-            target_folder = ensure_target_folder(insured_name, layer)
-            print(f"📂 Carpeta destino: {target_folder}")
-
-            # mover el slip
-            moved_path = move_with_rename(fpath, target_folder)
-            print(f"   ➜ Movido slip: {fname}")
-
-            i += 1
-
-            # mover los siguientes hasta MAX_GROUP_TAIL archivos (SOV/Claims)
-            tail = 0
-            while i < len(file_infos) and tail < MAX_GROUP_TAIL:
-                next_info = file_infos[i]
-                n_name = next_info["name"]
-                n_path = next_info["path"]
-                n_ext = os.path.splitext(n_name)[1].lower()
-
-                # si encontramos otra ancla, paramos este grupo
-                if is_anchor(n_name, n_ext):
-                    break
-
-                if n_ext in [".pdf", ".xlsx", ".xls", ".csv"]:
-                    move_with_rename(n_path, target_folder)
-                    print(f"   └─ ➜ Movido adjunto: {n_name}")
-                    tail += 1
-
-                i += 1
-
-            continue  # saltar al siguiente bucle principal
-
-        # si no es ancla, lo ignoramos
-        i += 1
+    df = pd.DataFrame(registros)
+    return df
 
 
-# Ejecutar
-# dispatch_downloads_today()
+# Uso:
+df_archivos = listar_final_slips(FINAL_SLIPS_DIR)
+print(df_archivos)
