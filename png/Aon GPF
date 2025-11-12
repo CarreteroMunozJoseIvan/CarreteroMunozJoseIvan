@@ -1,22 +1,39 @@
 import os
+import re
 import pandas as pd
 
-# Ruta base de tus cuentas
-FINAL_SLIPS_DIR = r"C:\Users\TU_USUARIO\Documents\Final_Slips"  # <- cámbiala
+# ==== CONFIG ====
+FINAL_SLIPS_DIR = r"C:\Users\TU_USUARIO\Documents\Final_Slips"  # <-- cámbiala
 
+
+# ----------------------------------------------------------------------
+# 1) Regla para identificar cuál archivo es el SLIP dentro de cada carpeta
+# ----------------------------------------------------------------------
 def es_slip(nombre_archivo: str) -> bool:
-    """Heurística simple para marcar qué archivo es el slip."""
     n = nombre_archivo.lower()
-    if n.startswith("pt"):
+
+    # Slip real (por nombre)
+    if "slip" in n or "declaration" in n:
         return True
-    if " slip" in n or "slip " in n or "declaration" in n:
+
+    # Archivos que contienen el código del broker PTXXXX
+    if re.search(r"\bpt[a-z0-9]+\b", n):
         return True
+
+    # Archivos con capa dentro del nombre (ej. "200m xs 100m")
+    if re.search(r"\d+\s*m.*?(x|xs)\s*\d+\s*m", n):
+        return True
+
     return False
 
+
+# ----------------------------------------------------------------------
+# 2) Función principal que recorre Final_Slips y genera el DataFrame
+# ----------------------------------------------------------------------
 def listar_final_slips(base_dir: str) -> pd.DataFrame:
+
     registros = []
 
-    # Recorremos SOLO las subcarpetas directas de Final_Slips
     for carpeta in os.listdir(base_dir):
         ruta_carpeta = os.path.join(base_dir, carpeta)
         if not os.path.isdir(ruta_carpeta):
@@ -28,24 +45,31 @@ def listar_final_slips(base_dir: str) -> pd.DataFrame:
             if not os.path.isfile(ruta_fichero):
                 continue
 
+            nombre_archivo = fichero
             ext = os.path.splitext(fichero)[1].lower()
 
-            # Nos quedamos con PDF y Excel (añade más si quieres)
-            if ext not in (".pdf", ".xlsx", ".xls"):
+            # Tipos de archivos permitidos
+            if ext not in (".pdf", ".xlsx", ".xls", ".xlsm", ".csv"):
                 continue
 
             registros.append({
                 "CarpetaCuenta": carpeta,
-                "NombreArchivo": fichero,
+                "NombreArchivo": nombre_archivo,
                 "Extension": ext,
-                "EsSlip": es_slip(fichero),
+                "EsSlip": es_slip(nombre_archivo),
                 "RutaCompleta": ruta_fichero
             })
 
     df = pd.DataFrame(registros)
-    return df
+
+    # Ordenar: primero slip, luego resto
+    df = df.sort_values(by=["CarpetaCuenta", "EsSlip"], ascending=[True, False])
+
+    return df.reset_index(drop=True)
 
 
-# Uso:
+# ----------------------------------------------------------------------
+# 3) Ejecutar y mostrar el DataFrame
+# ----------------------------------------------------------------------
 df_archivos = listar_final_slips(FINAL_SLIPS_DIR)
 print(df_archivos)
