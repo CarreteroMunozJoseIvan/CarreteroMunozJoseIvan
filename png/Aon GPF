@@ -1,107 +1,59 @@
-import os
-import re
+df_archivos.groupby("CarpetaCuenta").size().reset_index(name="TotalArchivos")
+
+resumen_ext = (
+    df_archivos
+    .groupby(["CarpetaCuenta", "Extension"])
+    .size()
+    .unstack(fill_value=0)
+    .reset_index()
+)
+
+resumen_ext
+
+orden_columnas = [".pdf", ".xlsx", ".xls", ".xlsm", ".csv"]
+
+for col in orden_columnas:
+    if col not in resumen_ext.columns:
+        resumen_ext[col] = 0
+
+resumen_ext = resumen_ext[["CarpetaCuenta"] + orden_columnas]
+
 import pandas as pd
 
-# ==== CONFIG ====
-FINAL_SLIPS_DIR = r"C:\Users\TU_USUARIO\Documents\Final_Slips"  # <-- cámbiala
+def resumen_con_archivos(df):
+    resumen = []
+
+    for carpeta, grupo in df.groupby("CarpetaCuenta"):
+        # agrupar dentro de la carpeta por extensión
+        ext_map = {}
+        for ext, subgrupo in grupo.groupby("Extension"):
+            # lista de archivos
+            lista_archivos = subgrupo["NombreArchivo"].tolist()
+            ext_map[ext] = lista_archivos
+
+        # construir la fila final para esa carpeta
+        fila = {"CarpetaCuenta": carpeta}
+
+        # añadir dinámicamente cada tipo de extensión
+        for ext, archivos in ext_map.items():
+            fila[f"{ext}_files"] = archivos
+            fila[f"{ext}_count"] = len(archivos)
+
+        resumen.append(fila)
+
+    # convertir a DF
+    df_res = pd.DataFrame(resumen).fillna(0)
+    return df_res
 
 
-# ========= CLASIFICADORES =========
+# === USO ===
+df_resumen_archivos = resumen_con_archivos(df_archivos)
+df_resumen_archivos
 
-def es_slip(nombre_archivo: str) -> bool:
-    n = nombre_archivo.lower()
+orden = ["CarpetaCuenta", ".pdf_files", ".pdf_count", ".xlsx_files", ".xlsx_count", ".xls_files", ".xls_count", ".csv_files", ".csv_count"]
 
-    if "slip" in n or "declaration" in n:
-        return True
+for col in orden:
+    if col not in df_resumen_archivos.columns:
+        df_resumen_archivos[col] = 0
 
-    if re.search(r"\bpt[a-z0-9]+\b", n):
-        return True
-
-    if re.search(r"\d+\s*m.*?(x|xs)\s*\d+\s*m", n):
-        return True
-
-    return False
-
-
-def es_sov(nombre_archivo: str) -> bool:
-    return bool(re.search(r"\bsov\b|values|tiv", nombre_archivo.lower()))
-
-
-def es_claims(nombre_archivo: str) -> bool:
-    return bool(re.search(r"claim", nombre_archivo.lower()))
-
-
-def clasificar_archivo(nombre_archivo: str) -> str:
-    if es_slip(nombre_archivo):
-        return "Slip"
-    if es_sov(nombre_archivo):
-        return "SOV"
-    if es_claims(nombre_archivo):
-        return "Claims"
-    return "Otro"
-
-
-# ========= FUNCIÓN PRINCIPAL =========
-
-def analizar_final_slips(base_dir: str):
-    registros = []
-
-    for carpeta in os.listdir(base_dir):
-        ruta_carpeta = os.path.join(base_dir, carpeta)
-        if not os.path.isdir(ruta_carpeta):
-            continue
-
-        for fichero in os.listdir(ruta_carpeta):
-            ruta_fichero = os.path.join(ruta_carpeta, fichero)
-            if not os.path.isfile(ruta_fichero):
-                continue
-
-            ext = os.path.splitext(fichero)[1].lower()
-            if ext not in (".pdf", ".xlsx", ".xls", ".xlsm", ".csv"):
-                continue
-
-            tipo = clasificar_archivo(fichero)
-
-            registros.append({
-                "CarpetaCuenta": carpeta,
-                "Archivo": fichero,
-                "Tipo": tipo,
-                "Extension": ext,
-                "RutaCompleta": ruta_fichero
-            })
-
-    df = pd.DataFrame(registros)
-
-    # Ordenamos por carpeta y tipo (Slip primero)
-    orden_tipo = {"Slip": 0, "SOV": 1, "Claims": 2, "Otro": 3}
-    df["OrdenTipo"] = df["Tipo"].map(orden_tipo)
-    df = df.sort_values(by=["CarpetaCuenta", "OrdenTipo"]).drop(columns=["OrdenTipo"])
-
-    # ==== RESUMEN POR CARPETA ====
-    resumen = (
-        df.groupby("CarpetaCuenta")["Tipo"]
-        .value_counts()
-        .unstack(fill_value=0)
-        .reset_index()
-    )
-
-    # Forzar columnas aunque no existan aún
-    for col in ["Slip", "SOV", "Claims", "Otro"]:
-        if col not in resumen.columns:
-            resumen[col] = 0
-
-    resumen = resumen[["CarpetaCuenta", "Slip", "SOV", "Claims", "Otro"]]
-
-    return df, resumen
-
-
-# ========= EJECUCIÓN =========
-
-df_archivos, df_resumen = analizar_final_slips(FINAL_SLIPS_DIR)
-
-print("\n================= DETALLE COMPLETO =================")
-print(df_archivos)
-
-print("\n================= RESUMEN POR CUENTA =================")
-print(df_resumen)
-
+df_resumen_archivos = df_resumen_archivos[orden]
