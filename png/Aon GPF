@@ -2,55 +2,40 @@ from openpyxl import load_workbook
 import pandas as pd
 from pathlib import Path
 
-# ==== PARÁMETROS ====
+# ==== PARÁMETROS FIJOS ====
 excel_path = Path(r"C:\RUTA\A\TU\Lineslip_Tracker_2025.xlsx")
 sheet_name = "GPF"
-header_row = 3   # donde están las cabeceras
+header_row = 3          # fila donde están las cabeceras
+last_old_row = 189      # última fila antigua con Account Name (hardcoded)
 
 # ==== 1. Abrir Excel ====
 wb = load_workbook(excel_path, data_only=True)
 ws = wb[sheet_name]
 
-# ==== 2. Localizar columna "Account Name" y "Name - Layer" ====
-
-# buscar cabeceras
+# ==== 2. Localizar columna "Name - Layer" a partir de la fila 3 ====
 header_map = {}
 for col in range(1, ws.max_column + 1):
     header = ws.cell(row=header_row, column=col).value
     if header:
         header_map[header] = col
 
-if "Account Name" not in header_map:
-    raise ValueError("❌ No se encuentra la columna 'Account Name' en Excel.")
-
 if "Name - Layer" not in header_map:
-    raise ValueError("❌ No se encuentra la columna 'Name - Layer' en Excel.")
+    raise ValueError("❌ No se encuentra la columna 'Name - Layer' en la fila de cabeceras.")
 
-col_account = header_map["Account Name"]
 col_name_layer = header_map["Name - Layer"]
 
-# ==== 3. Encontrar la última fila con un Account Name ====
-last_account_row = header_row
-for r in range(ws.max_row, header_row, -1):
-    value = ws.cell(row=r, column=col_account).value
-    if value not in (None, ""):
-        last_account_row = r
-        break
-
-print(f"Última fila con 'Account Name': {last_account_row}")
-
-# ==== 4. Leer desde esa fila + 1 hasta el final ====
-start_row = last_account_row + 1
+# ==== 3. Leer desde la fila 190 (last_old_row + 1) hasta el final ====
+start_row = last_old_row + 1   # 190
 end_row = ws.max_row
 
 name_layer_values = []
 for r in range(start_row, end_row + 1):
-    v = ws.cell(row=r, column=col_name_layer).value
-    if v not in (None, ""):
-        name_layer_values.append(v)
+    value = ws.cell(row=r, column=col_name_layer).value
+    if value not in (None, ""):
+        name_layer_values.append(value)
 
-# ==== 5. Convertir a DataFrame ====
+# ==== 4. Pasar a DataFrame ====
 df_name_layer = pd.DataFrame({"NameLayer": name_layer_values})
 
-print("✅ DataFrame generado:")
+print(f"Leídas {len(df_name_layer)} filas de Name - Layer desde la fila {start_row} hasta {end_row}.")
 df_name_layer
