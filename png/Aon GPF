@@ -1,61 +1,95 @@
-def parse_account_name(text: str):
+def format_layer_amount_m(value):
     """
-    Account Name:
-    - Buscar TODAS las apariciones de 'ORIGINAL INSURED'
-    - Usar SIEMPRE la ÚLTIMA (la de abajo)
-    - Dentro de ese bloque, buscar 'Name:' y coger la primera línea no vacía
-      después de 'Name:'
-    - Si no hubiera 'ORIGINAL INSURED', usamos un fallback genérico.
+    Convierte un número a formato 'Xm' o 'X.Ym':
+    - Si el valor es ≥ 1M, se pasa a millones (25,000,000 -> 25m)
+    - Si el valor es < 1M (ej. 113.5 de '113.5m'), se deja tal cual en millones
     """
+    if value is None:
+        return ""
 
-    lines = text.splitlines()
+    amount = float(value)
 
-    # 1) Localizar TODAS las líneas con 'ORIGINAL INSURED'
-    indices = [
-        i for i, line in enumerate(lines)
-        if re.search(r"\bORIGINAL\s+INSURED\b", line, flags=re.I)
-    ]
+    if amount >= 1_000_000:
+        m_val = amount / 1_000_000.0
+    else:
+        # caso en el que ya viene en millones (ej. 113.5m)
+        m_val = amount
 
-    if indices:
-        # 2) Usamos la ÚLTIMA aparición
-        start_idx = indices[-1]
+    if abs(m_val - round(m_val)) < 1e-6:
+        return f"{int(round(m_val))}m"
+    else:
+        return f"{m_val:.1f}m"
 
-        # 3) Buscar 'Name:' en las siguientes líneas de ese bloque
-        name_idx = None
-        for j in range(start_idx + 1, min(start_idx + 25, len(lines))):
-            if re.search(r"\bName\b\s*:", lines[j], flags=re.I):
-                name_idx = j
-                break
 
-        # 4) La primera línea NO vacía tras 'Name:' es el Account Name
-        if name_idx is not None:
-            for k in range(name_idx + 1, min(name_idx + 10, len(lines))):
-                cand = lines[k].strip(" :-;")
-                if cand:
-                    return cand
-
-        # Fallback por si el nombre estuviera en la misma línea de 'Name:'
-        if name_idx is not None:
-            m = re.search(r"Name\s*:\s*(.+)", lines[name_idx], flags=re.I)
-            if m:
-                cand = m.group(1).strip(" :-;")
-                if cand:
-                    return cand
-
-    # ============== FALLO COMPLETO: NO HAY 'ORIGINAL INSURED' ==============
-    # Fallback genérico, intentando NO coger el bloque de REINSURED
-    text_no_reinsured = re.sub(
-        r"REINSURED.*?Address:",
-        " ",
-        text,
+def parse_layer_block(text: str):
+    """
+    Devuelve: (layer_str, contract_currency, layer_type, limit, attachment)
+    layer_type ∈ {'Primary','XOL','Difference Between', None}
+    """
+    # XOL clásico
+    pat_xol = re.compile(
+        r"SUM\s*\(?RE\)?INSURED.*?"
+        r"([A-Z]{3})\s*([\d,]+(?:\.\d+)?)"
+        r".*?In\s+excess\s+of\s+"
+        r"([A-Z]{3})?\s*([\d,]+(?:\.\d+)?)",
         flags=re.I | re.S
     )
+    m = pat_xol.search(text)
+    if m:
+        c1, s1, c2, s2 = m.groups()
+        limit = _to_number(s1)
+        attachment = _to_number(s2)
+        c2 = c2 or c1
+        layer_str = (
+            f"{c1} {format_layer_amount_m(limit)} xs "
+            f"{c2} {format_layer_amount_m(attachment)}"
+        )
+        return layer_str, c1, "XOL", limit, attachment
 
-    t = re.sub(r"[^\S\r\n]+", " ", text_no_reinsured)
+    # Primary explícito
+    m = re.search(
+        r"\bPrimary\b\s+([A-Z]{3})\s*([\d,]+(?:\.\d+)?)",
+        text, flags=re.I
+    )
+    if m:
+        cur, s = m.groups()
+        limit = _to_number(s)
+        layer_str = f"Primary {cur} {format_layer_amount_m(limit)}"
+        return layer_str, cur, "Primary", limit, 0.0
 
-    for pat in [r"\bInsured\s*:\s*(.+)", r"\bAssured\s*:\s*(.+)"]:
-        m = re.search(pat, t, flags=re.I)
-        if m:
-            return m.group(1).splitlines()[0].strip(" :-;")
+    # SUM REINSURED sin 'excess'
+    m = re.search(
+        r"SUM\s*\(?RE\)?INSURED.*?([A-Z]{3})\s*([\d,]+(?:\.\d+)?)(?!.*In\s+excess)",
+        text, flags=re.I | re.S
+    )
+    if m:
+        cur, s = m.groups()
+        limit = _to_number(s)
+        layer_str = f"Primary {cur} {format_layer_amount_m(limit)}"
+        return layer_str, cur, "Primary", limit, 0.0
 
-    return None
+    # Genérico 'USD 300m xs USD 100m'
+    m = re.search(
+        r"([A-Z]{3})\s*([\d,]+(?:\.\d+)?)(?:m|M)?\s*(?:x|xs)\s*([A-Z]{3})?\s*([\d,]+(?:\.\d+)?)(?:m|M)?",
+        text, flags=re.I
+    )
+    if m:
+        c1, s1, c2, s2 = m.groups()
+        c2 = c2 or c1
+        limit = _to_number(s1)
+        attachment = _to_number(s2)
+        layer_str = (
+            f"{c1} {format_layer_amount_m(limit)} xs "
+            f"{c2} {format_layer_amount_m(attachment)}"
+        )
+        return layer_str, c1, "XOL", limit, attachment
+
+    # Solo límite gordo tipo EUR 20,000,000
+    m = re.search(r"\b([A-Z]{3})\s*([\d,]{6,})\b", text)
+    if m:
+        cur, s = m.groups()
+        limit = _to_number(s)
+        layer_str = f"Primary {cur} {format_layer_amount_m(limit)}"
+        return layer_str, cur, "Primary", limit, 0.0
+
+    return None, None, None, None, None
