@@ -2,17 +2,18 @@ from openpyxl import load_workbook
 import pandas as pd
 from pathlib import Path
 
-# ==== PARÁMETROS FIJOS ====
+# ====== PARÁMETROS ======
 excel_path = Path(r"C:\RUTA\A\TU\Lineslip_Tracker_2025.xlsx")
 sheet_name = "GPF"
-header_row = 3          # fila donde están las cabeceras
-last_old_row = 189      # última fila antigua con Account Name (hardcoded)
 
-# ==== 1. Abrir Excel ====
+header_row = 3          # fila donde están las cabeceras
+last_old_row = 189      # última fila antigua con Account Name (fijo)
+
+# ====== 1. ABRIR EXCEL ======
 wb = load_workbook(excel_path, data_only=True)
 ws = wb[sheet_name]
 
-# ==== 2. Localizar columna "Name - Layer" a partir de la fila 3 ====
+# ====== 2. LOCALIZAR COLUMNA "Name - Layer" ======
 header_map = {}
 for col in range(1, ws.max_column + 1):
     header = ws.cell(row=header_row, column=col).value
@@ -20,11 +21,11 @@ for col in range(1, ws.max_column + 1):
         header_map[header] = col
 
 if "Name - Layer" not in header_map:
-    raise ValueError("❌ No se encuentra la columna 'Name - Layer' en la fila de cabeceras.")
+    raise ValueError("❌ No se encuentra la columna 'Name - Layer' en el Excel.")
 
 col_name_layer = header_map["Name - Layer"]
 
-# ==== 3. Leer desde la fila 190 (last_old_row + 1) hasta el final ====
+# ====== 3. LEER DESDE 190 HASTA EL FINAL ======
 start_row = last_old_row + 1   # 190
 end_row = ws.max_row
 
@@ -34,8 +35,8 @@ for r in range(start_row, end_row + 1):
     if value not in (None, ""):
         name_layer_values.append(value)
 
-# ==== 4. Pasar a DataFrame ====
+# ====== 4. GENERAR DATAFRAME ======
 df_name_layer = pd.DataFrame({"NameLayer": name_layer_values})
 
-print(f"Leídas {len(df_name_layer)} filas de Name - Layer desde la fila {start_row} hasta {end_row}.")
+print(f"📌 Leídas {len(df_name_layer)} filas de Name - Layer desde la fila {start_row} hasta {end_row}.")
 df_name_layer
