@@ -1,31 +1,56 @@
-col_map_df_to_excel = {
-    # ---- EXCEL COLUMN NAME -----------------------------  DF COLUMN NAME -----
+from openpyxl import load_workbook
+import pandas as pd
+from pathlib import Path
 
-    "Account Name"                               : "AccountName",
-    "Broker Ref"                                 : "BrokerRef",
-    # "Everest ref"                              : None,   # NO EXISTE EN EL DF
+# ==== PARÁMETROS ====
+excel_path = Path(r"C:\RUTA\A\TU\Lineslip_Tracker_2025.xlsx")
+sheet_name = "GPF"
+header_row = 3   # donde están las cabeceras
 
-    "Inception"                                  : "Inception",
-    "Expiry"                                     : "Expiry",
+# ==== 1. Abrir Excel ====
+wb = load_workbook(excel_path, data_only=True)
+ws = wb[sheet_name]
 
-    "Country"                                    : "Country",
-    "Region"                                     : "Region",
+# ==== 2. Localizar columna "Account Name" y "Name - Layer" ====
 
-    "Type (EEA/ROW)"                             : "Primary_XOL_or_Diff",
-    "Contract Currency"                          : "ContractCurrency",
+# buscar cabeceras
+header_map = {}
+for col in range(1, ws.max_column + 1):
+    header = ws.cell(row=header_row, column=col).value
+    if header:
+        header_map[header] = col
 
-    "Layer"                                      : "Layer",
-    "Primary, XOL or Difference Between"         : "Primary_XOL_or_Diff",
+if "Account Name" not in header_map:
+    raise ValueError("❌ No se encuentra la columna 'Account Name' en Excel.")
 
-    "Limit"                                      : "Limit",
-    "Attachment"                                 : "Attachment",
+if "Name - Layer" not in header_map:
+    raise ValueError("❌ No se encuentra la columna 'Name - Layer' en Excel.")
 
-    "Premium (100% Annual) Contract Currency"    : "Premium",
-    "Premium Currency"                           : "PremiumCurrency",
+col_account = header_map["Account Name"]
+col_name_layer = header_map["Name - Layer"]
 
-    "Everest Share"                              : "EverestShare",
+# ==== 3. Encontrar la última fila con un Account Name ====
+last_account_row = header_row
+for r in range(ws.max_row, header_row, -1):
+    value = ws.cell(row=r, column=col_account).value
+    if value not in (None, ""):
+        last_account_row = r
+        break
 
-    "TIV"                                        : "TIV",
-    "TIV Currency"                               : "TIVCurrency",
-}
+print(f"Última fila con 'Account Name': {last_account_row}")
 
+# ==== 4. Leer desde esa fila + 1 hasta el final ====
+start_row = last_account_row + 1
+end_row = ws.max_row
+
+name_layer_values = []
+for r in range(start_row, end_row + 1):
+    v = ws.cell(row=r, column=col_name_layer).value
+    if v not in (None, ""):
+        name_layer_values.append(v)
+
+# ==== 5. Convertir a DataFrame ====
+df_name_layer = pd.DataFrame({"NameLayer": name_layer_values})
+
+print("✅ DataFrame generado:")
+df_name_layer
