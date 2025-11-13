@@ -1,63 +1,111 @@
+from openpyxl import load_workbook
 from pathlib import Path
-import pandas as pd
 
-# 1) Define tu base directory
-base_dir = Path(r"C:\Users\lmunoz01\OneDrive - Everest Reinsurance\Documents\Aon GPF Automation")
+# ---------------------------------------------------
+# 0) Parámetros
+# ---------------------------------------------------
+excel_path = Path(r"C:\ruta\hasta\tu\Lineslip_Tracker_2025.xlsx")
+sheet_name = "GPF"
 
-# 2) Moverse a la carpeta "Final_slips"
-endpoint = "Final_slips"
-final_slips_dir = base_dir / endpoint   # más limpio que joinpath + Path
+# df_all_slips: DataFrame que ya tienes con TODOS los slips
+# columnas típicas esperadas (ajusta): 
+# ['account_name', 'broker_ref', 'everest_ref', 'inception',
+#  'expiry', 'type_eea_row', 'currency', 'layer',
+#  'layer_type', 'limit', 'attachment', 'premium_ccy',
+#  'everest_share', 'tiv', 'name_layer', 'loss_history',
+#  'source_file', 'folder_name', ...]
 
-if not final_slips_dir.exists():
-    raise FileNotFoundError(f"❌ Folder not found: {final_slips_dir}")
+# ---------------------------------------------------
+# 1) Abrir libro y localizar fila de cabeceras
+# ---------------------------------------------------
+wb = load_workbook(excel_path)
+ws = wb[sheet_name]
 
-print(f"📁 Scanning base folder: {final_slips_dir}\n")
+max_row = ws.max_row
+max_col = ws.max_column
 
-# AQUÍ guardaremos todas las filas de todos los slips
-all_rows = []
+header_row = None
+for r in range(1, 20):  # asumo que las cabeceras están arriba
+    row_values = [ws.cell(row=r, column=c).value for c in range(1, max_col+1)]
+    if "Account Name" in row_values:
+        header_row = r
+        break
 
-# 3) Loop por cada subcarpeta (cada cuenta / slip folder)
-for slip_folder in sorted(final_slips_dir.iterdir()):
-    if not slip_folder.is_dir():
-        continue
+if header_row is None:
+    raise ValueError("No se ha encontrado la fila de cabeceras (Account Name).")
 
-    print(f"\n➡️ Folder: {slip_folder.name}")
+# Mapeo nombre_columna_excel -> número de columna
+header_map_excel = {}
+for c in range(1, max_col+1):
+    val = ws.cell(row=header_row, column=c).value
+    if val:
+        header_map_excel[val] = c
 
-    # 4) Buscar PDFs dentro de la carpeta (solo debería haber 1)
-    pdf_files = list(slip_folder.glob("*.pdf"))  # ya no uso rglob, solo nivel actual
+# ---------------------------------------------------
+# 2) Localizar última fila con datos debajo de las cabeceras
+# ---------------------------------------------------
+last_data_row = header_row
+for r in range(ws.max_row, header_row, -1):
+    if any(ws.cell(row=r, column=c).value not in (None, "") 
+           for c in range(1, max_col+1)):
+        last_data_row = r
+        break
 
-    if not pdf_files:
-        print("   -> No PDFs found here")
-        continue
+# ---------------------------------------------------
+# 3) Mapeo columnas DF -> columnas Excel
+# ---------------------------------------------------
+col_map_df_to_excel = {
+    # Excel header           : columna en df_all_slips
+    "Account Name"                               : "account_name",
+    "Broker Ref"                                 : "broker_ref",
+    "Everest ref"                                : "everest_ref",
+    "Inception"                                  : "inception",
+    "Expiry"                                     : "expiry",
+    "Type (EEA/ROW)"                             : "type_eea_row",
+    "Contract Currency"                          : "currency",
+    "Layer"                                      : "layer",
+    "Primary, XOL or Difference Between"         : "layer_type",
+    "Limit"                                      : "limit",
+    "Attachment"                                 : "attachment",
+    "Premium (100% Annual) Contract Currency"    : "premium_ccy",
+    "Everest Share"                              : "everest_share",
+    "TIV"                                        : "tiv",          # <- importante
+    "Name - Layer"                               : "name_layer",
+}
 
-    if len(pdf_files) > 1:
-        print(f"   ⚠️ Found {len(pdf_files)} PDFs, usaré solo el primero: {pdf_files[0].name}")
+# columnas que NO queremos escribir (loss history, source, folder, etc.)
+cols_to_skip_df = {"loss_history", "source_file", "folder_name"}
 
-    pdf_path = pdf_files[0]  # usamos SOLO el slip (primer pdf)
-    full_path = pdf_path.resolve()
+# ---------------------------------------------------
+# 4) Escribir filas nuevas al final
+# ---------------------------------------------------
+row_idx = last_data_row + 1
 
-    print(f"   📄 Slip PDF: {pdf_path.name}")
-    # 5) Sacar texto
-    text = extract_text_pdf_robust(full_path)
+for _, slip in df_all_slips.iterrows():
+    # 4.1 Dejar en blanco columnas con fórmula (Lineslip, Status, UW, Days)
+    # Solo nos aseguramos de NO tocar esas cabeceras si existen:
+    for formula_header in ["Lineslip", "Status", "UW", "Days"]:
+        if formula_header in header_map_excel:
+            col_idx = header_map_excel[formula_header]
+            ws.cell(row=row_idx, column=col_idx, value=None)  # se queda vacío
 
-    # 6) Pasar el texto al parser para generar la fila del DataFrame
-    df_row = slip_text_to_dataframe(text, source_file=pdf_path.name)
+    # 4.2 Escribir el resto de columnas BPO desde df_all_slips
+    for excel_header, df_col in col_map_df_to_excel.items():
+        if df_col in cols_to_skip_df:
+            continue  # por si acaso
 
-    # (Opcional) añadir el nombre de la carpeta por si te sirve como columna
-    df_row["folder_name"] = slip_folder.name
+        if excel_header not in header_map_excel:
+            continue  # por si alguna cabecera no existe
 
-    # Guardamos la fila
-    all_rows.append(df_row)
+        value = slip.get(df_col, None)
+        col_idx = header_map_excel[excel_header]
+        ws.cell(row=row_idx, column=col_idx, value=value)
 
-    # (Opcional) preview
-    print(f"   ✅ Extracted {len(text)} characters")
+    row_idx += 1
 
-# 7) Juntar todo en un solo DataFrame
-if all_rows:
-    df_all_slips = pd.concat(all_rows, ignore_index=True)
-    print("\n✅ DataFrame final con todos los slips:")
-    display(df_all_slips)          # si estás en Jupyter
-    # o simplemente:
-    # print(df_all_slips)
-else:
-    print("\n⚠️ No se ha generado ninguna fila (¿no había slips?)")
+# ---------------------------------------------------
+# 5) Guardar
+# ---------------------------------------------------
+wb.save(excel_path)
+print("✅ Nuevos slips añadidos al final de la hoja GPF.")
+
