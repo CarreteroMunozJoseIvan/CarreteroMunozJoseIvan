@@ -1,61 +1,39 @@
 from openpyxl import load_workbook
 from pathlib import Path
 
-# ---------------------------------------------------
-# 0) Parámetros
-# ---------------------------------------------------
 excel_path = Path(r"C:\ruta\hasta\tu\Lineslip_Tracker_2025.xlsx")
 sheet_name = "GPF"
 
-# df_all_slips: DataFrame que ya tienes con TODOS los slips
-# columnas típicas esperadas (ajusta): 
-# ['account_name', 'broker_ref', 'everest_ref', 'inception',
-#  'expiry', 'type_eea_row', 'currency', 'layer',
-#  'layer_type', 'limit', 'attachment', 'premium_ccy',
-#  'everest_share', 'tiv', 'name_layer', 'loss_history',
-#  'source_file', 'folder_name', ...]
-
-# ---------------------------------------------------
-# 1) Abrir libro y localizar fila de cabeceras
-# ---------------------------------------------------
-wb = load_workbook(excel_path)
+wb = load_workbook(excel_path)  # si quieres solo valores: data_only=True
 ws = wb[sheet_name]
 
-max_row = ws.max_row
+# ===== 1) Cabeceras (fila 3) =====
+header_row = 3
 max_col = ws.max_column
 
-header_row = None
-for r in range(1, 20):  # asumo que las cabeceras están arriba
-    row_values = [ws.cell(row=r, column=c).value for c in range(1, max_col+1)]
-    if "Account Name" in row_values:
-        header_row = r
-        break
-
-if header_row is None:
-    raise ValueError("No se ha encontrado la fila de cabeceras (Account Name).")
-
-# Mapeo nombre_columna_excel -> número de columna
 header_map_excel = {}
-for c in range(1, max_col+1):
+for c in range(1, max_col + 1):
     val = ws.cell(row=header_row, column=c).value
     if val:
         header_map_excel[val] = c
 
-# ---------------------------------------------------
-# 2) Localizar última fila con datos debajo de las cabeceras
-# ---------------------------------------------------
+# ===== 2) Última fila real usando SOLO "Account Name" =====
+if "Account Name" not in header_map_excel:
+    raise ValueError("No encuentro la columna 'Account Name'.")
+
+col_account = header_map_excel["Account Name"]
+
 last_data_row = header_row
 for r in range(ws.max_row, header_row, -1):
-    if any(ws.cell(row=r, column=c).value not in (None, "") 
-           for c in range(1, max_col+1)):
+    val = ws.cell(row=r, column=col_account).value
+    if val not in (None, ""):
         last_data_row = r
         break
 
-# ---------------------------------------------------
-# 3) Mapeo columnas DF -> columnas Excel
-# ---------------------------------------------------
+print("Última fila con Account Name:", last_data_row)
+
+# ===== 3) Mapa DF -> Excel =====
 col_map_df_to_excel = {
-    # Excel header           : columna en df_all_slips
     "Account Name"                               : "account_name",
     "Broker Ref"                                 : "broker_ref",
     "Everest ref"                                : "everest_ref",
@@ -69,33 +47,28 @@ col_map_df_to_excel = {
     "Attachment"                                 : "attachment",
     "Premium (100% Annual) Contract Currency"    : "premium_ccy",
     "Everest Share"                              : "everest_share",
-    "TIV"                                        : "tiv",          # <- importante
+    "TIV"                                        : "tiv",
     "Name - Layer"                               : "name_layer",
 }
 
-# columnas que NO queremos escribir (loss history, source, folder, etc.)
 cols_to_skip_df = {"loss_history", "source_file", "folder_name"}
 
-# ---------------------------------------------------
-# 4) Escribir filas nuevas al final
-# ---------------------------------------------------
+# ===== 4) Añadir filas nuevas debajo de la última con Account Name =====
 row_idx = last_data_row + 1
 
 for _, slip in df_all_slips.iterrows():
-    # 4.1 Dejar en blanco columnas con fórmula (Lineslip, Status, UW, Days)
-    # Solo nos aseguramos de NO tocar esas cabeceras si existen:
+    # columnas con fórmula que NO rellenamos
     for formula_header in ["Lineslip", "Status", "UW", "Days"]:
         if formula_header in header_map_excel:
             col_idx = header_map_excel[formula_header]
-            ws.cell(row=row_idx, column=col_idx, value=None)  # se queda vacío
+            ws.cell(row=row_idx, column=col_idx, value=None)
 
-    # 4.2 Escribir el resto de columnas BPO desde df_all_slips
+    # rellenar columnas BPO desde el DF
     for excel_header, df_col in col_map_df_to_excel.items():
         if df_col in cols_to_skip_df:
-            continue  # por si acaso
-
+            continue
         if excel_header not in header_map_excel:
-            continue  # por si alguna cabecera no existe
+            continue
 
         value = slip.get(df_col, None)
         col_idx = header_map_excel[excel_header]
@@ -103,9 +76,5 @@ for _, slip in df_all_slips.iterrows():
 
     row_idx += 1
 
-# ---------------------------------------------------
-# 5) Guardar
-# ---------------------------------------------------
 wb.save(excel_path)
-print("✅ Nuevos slips añadidos al final de la hoja GPF.")
-
+print("✅ Nuevos slips añadidos al final (según última fila de Account Name).")
