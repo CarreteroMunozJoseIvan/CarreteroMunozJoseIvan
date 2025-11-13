@@ -1,95 +1,63 @@
-def format_layer_amount_m(value):
-    """
-    Convierte un número a formato 'Xm' o 'X.Ym':
-    - Si el valor es ≥ 1M, se pasa a millones (25,000,000 -> 25m)
-    - Si el valor es < 1M (ej. 113.5 de '113.5m'), se deja tal cual en millones
-    """
-    if value is None:
-        return ""
+from pathlib import Path
+import pandas as pd
 
-    amount = float(value)
+# 1) Define tu base directory
+base_dir = Path(r"C:\Users\lmunoz01\OneDrive - Everest Reinsurance\Documents\Aon GPF Automation")
 
-    if amount >= 1_000_000:
-        m_val = amount / 1_000_000.0
-    else:
-        # caso en el que ya viene en millones (ej. 113.5m)
-        m_val = amount
+# 2) Moverse a la carpeta "Final_slips"
+endpoint = "Final_slips"
+final_slips_dir = base_dir / endpoint   # más limpio que joinpath + Path
 
-    if abs(m_val - round(m_val)) < 1e-6:
-        return f"{int(round(m_val))}m"
-    else:
-        return f"{m_val:.1f}m"
+if not final_slips_dir.exists():
+    raise FileNotFoundError(f"❌ Folder not found: {final_slips_dir}")
 
+print(f"📁 Scanning base folder: {final_slips_dir}\n")
 
-def parse_layer_block(text: str):
-    """
-    Devuelve: (layer_str, contract_currency, layer_type, limit, attachment)
-    layer_type ∈ {'Primary','XOL','Difference Between', None}
-    """
-    # XOL clásico
-    pat_xol = re.compile(
-        r"SUM\s*\(?RE\)?INSURED.*?"
-        r"([A-Z]{3})\s*([\d,]+(?:\.\d+)?)"
-        r".*?In\s+excess\s+of\s+"
-        r"([A-Z]{3})?\s*([\d,]+(?:\.\d+)?)",
-        flags=re.I | re.S
-    )
-    m = pat_xol.search(text)
-    if m:
-        c1, s1, c2, s2 = m.groups()
-        limit = _to_number(s1)
-        attachment = _to_number(s2)
-        c2 = c2 or c1
-        layer_str = (
-            f"{c1} {format_layer_amount_m(limit)} xs "
-            f"{c2} {format_layer_amount_m(attachment)}"
-        )
-        return layer_str, c1, "XOL", limit, attachment
+# AQUÍ guardaremos todas las filas de todos los slips
+all_rows = []
 
-    # Primary explícito
-    m = re.search(
-        r"\bPrimary\b\s+([A-Z]{3})\s*([\d,]+(?:\.\d+)?)",
-        text, flags=re.I
-    )
-    if m:
-        cur, s = m.groups()
-        limit = _to_number(s)
-        layer_str = f"Primary {cur} {format_layer_amount_m(limit)}"
-        return layer_str, cur, "Primary", limit, 0.0
+# 3) Loop por cada subcarpeta (cada cuenta / slip folder)
+for slip_folder in sorted(final_slips_dir.iterdir()):
+    if not slip_folder.is_dir():
+        continue
 
-    # SUM REINSURED sin 'excess'
-    m = re.search(
-        r"SUM\s*\(?RE\)?INSURED.*?([A-Z]{3})\s*([\d,]+(?:\.\d+)?)(?!.*In\s+excess)",
-        text, flags=re.I | re.S
-    )
-    if m:
-        cur, s = m.groups()
-        limit = _to_number(s)
-        layer_str = f"Primary {cur} {format_layer_amount_m(limit)}"
-        return layer_str, cur, "Primary", limit, 0.0
+    print(f"\n➡️ Folder: {slip_folder.name}")
 
-    # Genérico 'USD 300m xs USD 100m'
-    m = re.search(
-        r"([A-Z]{3})\s*([\d,]+(?:\.\d+)?)(?:m|M)?\s*(?:x|xs)\s*([A-Z]{3})?\s*([\d,]+(?:\.\d+)?)(?:m|M)?",
-        text, flags=re.I
-    )
-    if m:
-        c1, s1, c2, s2 = m.groups()
-        c2 = c2 or c1
-        limit = _to_number(s1)
-        attachment = _to_number(s2)
-        layer_str = (
-            f"{c1} {format_layer_amount_m(limit)} xs "
-            f"{c2} {format_layer_amount_m(attachment)}"
-        )
-        return layer_str, c1, "XOL", limit, attachment
+    # 4) Buscar PDFs dentro de la carpeta (solo debería haber 1)
+    pdf_files = list(slip_folder.glob("*.pdf"))  # ya no uso rglob, solo nivel actual
 
-    # Solo límite gordo tipo EUR 20,000,000
-    m = re.search(r"\b([A-Z]{3})\s*([\d,]{6,})\b", text)
-    if m:
-        cur, s = m.groups()
-        limit = _to_number(s)
-        layer_str = f"Primary {cur} {format_layer_amount_m(limit)}"
-        return layer_str, cur, "Primary", limit, 0.0
+    if not pdf_files:
+        print("   -> No PDFs found here")
+        continue
 
-    return None, None, None, None, None
+    if len(pdf_files) > 1:
+        print(f"   ⚠️ Found {len(pdf_files)} PDFs, usaré solo el primero: {pdf_files[0].name}")
+
+    pdf_path = pdf_files[0]  # usamos SOLO el slip (primer pdf)
+    full_path = pdf_path.resolve()
+
+    print(f"   📄 Slip PDF: {pdf_path.name}")
+    # 5) Sacar texto
+    text = extract_text_pdf_robust(full_path)
+
+    # 6) Pasar el texto al parser para generar la fila del DataFrame
+    df_row = slip_text_to_dataframe(text, source_file=pdf_path.name)
+
+    # (Opcional) añadir el nombre de la carpeta por si te sirve como columna
+    df_row["folder_name"] = slip_folder.name
+
+    # Guardamos la fila
+    all_rows.append(df_row)
+
+    # (Opcional) preview
+    print(f"   ✅ Extracted {len(text)} characters")
+
+# 7) Juntar todo en un solo DataFrame
+if all_rows:
+    df_all_slips = pd.concat(all_rows, ignore_index=True)
+    print("\n✅ DataFrame final con todos los slips:")
+    display(df_all_slips)          # si estás en Jupyter
+    # o simplemente:
+    # print(df_all_slips)
+else:
+    print("\n⚠️ No se ha generado ninguna fila (¿no había slips?)")
