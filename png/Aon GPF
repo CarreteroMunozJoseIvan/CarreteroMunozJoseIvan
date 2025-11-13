@@ -1,54 +1,52 @@
 def parse_account_name(text: str):
     """
     Account Name:
-    - Prioridad absoluta: bloque 'ORIGINAL INSURED'
-      -> buscar 'ORIGINAL INSURED'
-      -> dentro de las siguientes líneas, 'Name:'
-      -> la primera línea no vacía después de 'Name:' es el nombre.
-    - Solo si no existe 'ORIGINAL INSURED', usamos fallbacks.
+    - Buscar TODAS las apariciones de 'ORIGINAL INSURED'
+    - Usar SIEMPRE la ÚLTIMA (la de abajo)
+    - Dentro de ese bloque, buscar 'Name:' y coger la primera línea no vacía
+      después de 'Name:'
+    - Si no hubiera 'ORIGINAL INSURED', usamos un fallback genérico.
     """
 
     lines = text.splitlines()
 
-    # 1) Buscar la línea donde aparece 'ORIGINAL INSURED'
-    start_idx = None
-    for i, line in enumerate(lines):
-        if re.search(r"\bORIGINAL\s+INSURED\b", line, flags=re.I):
-            start_idx = i
-            break
+    # 1) Localizar TODAS las líneas con 'ORIGINAL INSURED'
+    indices = [
+        i for i, line in enumerate(lines)
+        if re.search(r"\bORIGINAL\s+INSURED\b", line, flags=re.I)
+    ]
 
-    if start_idx is not None:
-        # 2) Dentro de ese bloque, buscar 'Name:'
+    if indices:
+        # 2) Usamos la ÚLTIMA aparición
+        start_idx = indices[-1]
+
+        # 3) Buscar 'Name:' en las siguientes líneas de ese bloque
         name_idx = None
-        for j in range(start_idx + 1, min(start_idx + 20, len(lines))):
+        for j in range(start_idx + 1, min(start_idx + 25, len(lines))):
             if re.search(r"\bName\b\s*:", lines[j], flags=re.I):
                 name_idx = j
                 break
 
-        # 3) La primera línea no vacía después de 'Name:' es el Account Name
+        # 4) La primera línea NO vacía tras 'Name:' es el Account Name
         if name_idx is not None:
             for k in range(name_idx + 1, min(name_idx + 10, len(lines))):
                 cand = lines[k].strip(" :-;")
                 if cand:
                     return cand
 
-        # 4) Fallback dentro del mismo bloque por si 'Name:' viniera en la misma línea
-        block_text = "\n".join(lines[start_idx:])
-        m = re.search(r"ORIGINAL\s+INSURED.*?Name\s*:\s*(.+)", block_text,
-                      flags=re.I | re.S)
-        if m:
-            after = m.group(1).strip()
-            for line in after.splitlines():
-                cand = line.strip(" :-;")
+        # Fallback por si el nombre estuviera en la misma línea de 'Name:'
+        if name_idx is not None:
+            m = re.search(r"Name\s*:\s*(.+)", lines[name_idx], flags=re.I)
+            if m:
+                cand = m.group(1).strip(" :-;")
                 if cand:
                     return cand
 
     # ============== FALLO COMPLETO: NO HAY 'ORIGINAL INSURED' ==============
-    # En este caso usamos un fallback más genérico, pero intentando
-    # eliminar el bloque de REINSURED para no coger Allianz, etc.
+    # Fallback genérico, intentando NO coger el bloque de REINSURED
     text_no_reinsured = re.sub(
         r"REINSURED.*?Address:",
-        " ",  # lo reemplazamos por espacio
+        " ",
         text,
         flags=re.I | re.S
     )
