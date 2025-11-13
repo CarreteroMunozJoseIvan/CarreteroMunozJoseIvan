@@ -1,42 +1,14 @@
 from openpyxl import load_workbook
-import pandas as pd
 from pathlib import Path
 
-# ====== PARÁMETROS ======
 excel_path = Path(r"C:\RUTA\A\TU\Lineslip_Tracker_2025.xlsx")
-sheet_name = "GPF"
+wb = load_workbook(excel_path, data_only=True)   # <- lee VALOR
+ws = wb["GPF"]
 
-header_row = 3          # fila donde están las cabeceras
-last_old_row = 189      # última fila antigua con Account Name (fijo)
+cell = ws["AE190"]  # cambia "AE" por la columna real de Name - Layer
+print("data_only=True ->", cell.value)
 
-# ====== 1. ABRIR EXCEL ======
-wb = load_workbook(excel_path, data_only=True)
-ws = wb[sheet_name]
-
-# ====== 2. LOCALIZAR COLUMNA "Name - Layer" ======
-header_map = {}
-for col in range(1, ws.max_column + 1):
-    header = ws.cell(row=header_row, column=col).value
-    if header:
-        header_map[header] = col
-
-if "Name - Layer" not in header_map:
-    raise ValueError("❌ No se encuentra la columna 'Name - Layer' en el Excel.")
-
-col_name_layer = header_map["Name - Layer"]
-
-# ====== 3. LEER DESDE 190 HASTA EL FINAL ======
-start_row = last_old_row + 1   # 190
-end_row = ws.max_row
-
-name_layer_values = []
-for r in range(start_row, end_row + 1):
-    value = ws.cell(row=r, column=col_name_layer).value
-    if value not in (None, ""):
-        name_layer_values.append(value)
-
-# ====== 4. GENERAR DATAFRAME ======
-df_name_layer = pd.DataFrame({"NameLayer": name_layer_values})
-
-print(f"📌 Leídas {len(df_name_layer)} filas de Name - Layer desde la fila {start_row} hasta {end_row}.")
-df_name_layer
+wb2 = load_workbook(excel_path, data_only=False) # <- lee FÓRMULA
+ws2 = wb2["GPF"]
+cell2 = ws2["AE190"]
+print("data_only=False ->", cell2.value)
