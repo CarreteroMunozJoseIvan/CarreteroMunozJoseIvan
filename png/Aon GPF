@@ -1,14 +1,32 @@
-from openpyxl import load_workbook
+import pandas as pd
 from pathlib import Path
 
-excel_path = Path(r"C:\RUTA\A\TU\Lineslip_Tracker_2025.xlsx")
-wb = load_workbook(excel_path, data_only=True)   # <- lee VALOR
-ws = wb["GPF"]
+excel_path = Path(
+    r"C:\Users\lmunoz01\OneDrive - Everest Reinsurance\Documents\Aon GPF Automation\Lineslip Tracker 2025_ivan.xlsx"
+)
+sheet_name = "GPF"
 
-cell = ws["AE190"]  # cambia "AE" por la columna real de Name - Layer
-print("data_only=True ->", cell.value)
+# 1) Leer la hoja como DataFrame
+# header=2  -> usa la fila 3 de Excel como cabecera (0-based)
+df = pd.read_excel(excel_path, sheet_name=sheet_name, header=2)
 
-wb2 = load_workbook(excel_path, data_only=False) # <- lee FÓRMULA
-ws2 = wb2["GPF"]
-cell2 = ws2["AE190"]
-print("data_only=False ->", cell2.value)
+# 2) Calcular índices de pandas que corresponden a filas de Excel
+excel_header_row = 3               # cabeceras en Excel
+first_data_row_excel = excel_header_row + 1   # = 4
+start_excel_row = 190              # desde aquí queremos leer
+
+start_idx = start_excel_row - first_data_row_excel  # índice pandas inicio
+
+# 3) Buscar el último índice con Account Name no nulo
+mask = df["Account Name"].notna()
+if not mask.any():
+    raise ValueError("No hay ningún 'Account Name' no vacío en el DataFrame leído.")
+
+last_idx = df.index[mask][-1]      # último índice con Account Name
+
+# 4) Filtrar solo desde la fila 190 hasta el último Account Name, columna Name - Layer
+df_name_layer = df.loc[start_idx:last_idx, ["Name - Layer"]].copy()
+df_name_layer = df_name_layer.rename(columns={"Name - Layer": "NameLayer"})
+
+print(f"Filas leídas: {len(df_name_layer)} (Excel filas {start_excel_row}–{last_idx + first_data_row_excel})")
+df_name_layer
