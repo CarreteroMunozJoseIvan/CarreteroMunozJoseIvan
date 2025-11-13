@@ -1,80 +1,31 @@
-from openpyxl import load_workbook
-from pathlib import Path
-
-excel_path = Path(r"C:\ruta\hasta\tu\Lineslip_Tracker_2025.xlsx")
-sheet_name = "GPF"
-
-wb = load_workbook(excel_path)  # si quieres solo valores: data_only=True
-ws = wb[sheet_name]
-
-# ===== 1) Cabeceras (fila 3) =====
-header_row = 3
-max_col = ws.max_column
-
-header_map_excel = {}
-for c in range(1, max_col + 1):
-    val = ws.cell(row=header_row, column=c).value
-    if val:
-        header_map_excel[val] = c
-
-# ===== 2) Última fila real usando SOLO "Account Name" =====
-if "Account Name" not in header_map_excel:
-    raise ValueError("No encuentro la columna 'Account Name'.")
-
-col_account = header_map_excel["Account Name"]
-
-last_data_row = header_row
-for r in range(ws.max_row, header_row, -1):
-    val = ws.cell(row=r, column=col_account).value
-    if val not in (None, ""):
-        last_data_row = r
-        break
-
-print("Última fila con Account Name:", last_data_row)
-
-# ===== 3) Mapa DF -> Excel =====
 col_map_df_to_excel = {
-    "Account Name"                               : "account_name",
-    "Broker Ref"                                 : "broker_ref",
-    "Everest ref"                                : "everest_ref",
-    "Inception"                                  : "inception",
-    "Expiry"                                     : "expiry",
-    "Type (EEA/ROW)"                             : "type_eea_row",
-    "Contract Currency"                          : "currency",
-    "Layer"                                      : "layer",
-    "Primary, XOL or Difference Between"         : "layer_type",
-    "Limit"                                      : "limit",
-    "Attachment"                                 : "attachment",
-    "Premium (100% Annual) Contract Currency"    : "premium_ccy",
-    "Everest Share"                              : "everest_share",
-    "TIV"                                        : "tiv",
-    "Name - Layer"                               : "name_layer",
+    # ---- EXCEL COLUMN NAME -----------------------------  DF COLUMN NAME -----
+
+    "Account Name"                               : "AccountName",
+    "Broker Ref"                                 : "BrokerRef",
+    # "Everest ref"                              : None,   # NO EXISTE EN EL DF
+
+    "Inception"                                  : "Inception",
+    "Expiry"                                     : "Expiry",
+
+    "Country"                                    : "Country",
+    "Region"                                     : "Region",
+
+    "Type (EEA/ROW)"                             : "Primary_XOL_or_Diff",
+    "Contract Currency"                          : "ContractCurrency",
+
+    "Layer"                                      : "Layer",
+    "Primary, XOL or Difference Between"         : "Primary_XOL_or_Diff",
+
+    "Limit"                                      : "Limit",
+    "Attachment"                                 : "Attachment",
+
+    "Premium (100% Annual) Contract Currency"    : "Premium",
+    "Premium Currency"                           : "PremiumCurrency",
+
+    "Everest Share"                              : "EverestShare",
+
+    "TIV"                                        : "TIV",
+    "TIV Currency"                               : "TIVCurrency",
 }
 
-cols_to_skip_df = {"loss_history", "source_file", "folder_name"}
-
-# ===== 4) Añadir filas nuevas debajo de la última con Account Name =====
-row_idx = last_data_row + 1
-
-for _, slip in df_all_slips.iterrows():
-    # columnas con fórmula que NO rellenamos
-    for formula_header in ["Lineslip", "Status", "UW", "Days"]:
-        if formula_header in header_map_excel:
-            col_idx = header_map_excel[formula_header]
-            ws.cell(row=row_idx, column=col_idx, value=None)
-
-    # rellenar columnas BPO desde el DF
-    for excel_header, df_col in col_map_df_to_excel.items():
-        if df_col in cols_to_skip_df:
-            continue
-        if excel_header not in header_map_excel:
-            continue
-
-        value = slip.get(df_col, None)
-        col_idx = header_map_excel[excel_header]
-        ws.cell(row=row_idx, column=col_idx, value=value)
-
-    row_idx += 1
-
-wb.save(excel_path)
-print("✅ Nuevos slips añadidos al final (según última fila de Account Name).")
