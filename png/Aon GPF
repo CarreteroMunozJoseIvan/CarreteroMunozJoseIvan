@@ -6,27 +6,42 @@ excel_path = Path(
 )
 sheet_name = "GPF"
 
-# 1) Leer la hoja como DataFrame
-# header=2  -> usa la fila 3 de Excel como cabecera (0-based)
+# 1) Leer Excel
 df = pd.read_excel(excel_path, sheet_name=sheet_name, header=2)
 
-# 2) Calcular índices de pandas que corresponden a filas de Excel
-excel_header_row = 3               # cabeceras en Excel
+# 2) Relación Excel → índices pandas
+excel_header_row = 3
 first_data_row_excel = excel_header_row + 1   # = 4
-start_excel_row = 190              # desde aquí queremos leer
+start_excel_row = 190                         # desde aquí van los nuevos slips
 
-start_idx = start_excel_row - first_data_row_excel  # índice pandas inicio
+start_idx = start_excel_row - first_data_row_excel  # 190 -> índice 186
 
-# 3) Buscar el último índice con Account Name no nulo
-mask = df["Account Name"].notna()
-if not mask.any():
-    raise ValueError("No hay ningún 'Account Name' no vacío en el DataFrame leído.")
+# 3) Filtrar solo filas nuevas con Account Name
+df_new = df.loc[start_idx:].copy()
+df_new = df_new[df_new["Account Name"].notna()]
 
-last_idx = df.index[mask][-1]      # último índice con Account Name
+# 4) Construir GPFxx a partir de Unique Number
+def make_gpf(u):
+    if pd.isna(u):
+        return ""
+    # normalmente viene como float (ej. 31.0) → lo pasamos a int
+    return f"GPF{int(u)}"
 
-# 4) Filtrar solo desde la fila 190 hasta el último Account Name, columna Name - Layer
-df_name_layer = df.loc[start_idx:last_idx, ["Name - Layer"]].copy()
-df_name_layer = df_name_layer.rename(columns={"Name - Layer": "NameLayer"})
+df_new["GPFRef"] = df_new["Unique Number"].apply(make_gpf)
 
-print(f"Filas leídas: {len(df_name_layer)} (Excel filas {start_excel_row}–{last_idx + first_data_row_excel})")
+# 5) Construir NameLayer con el formato:
+#    Account Name - Layer - [GPFxx]
+df_new["NameLayer"] = (
+    df_new["Account Name"].astype(str)
+    + " - "
+    + df_new["Layer"].astype(str)
+    + " - ["
+    + df_new["GPFRef"].astype(str)
+    + "]"
+)
+
+# 6) Nos quedamos solo con esa columna
+df_name_layer = df_new[["NameLayer"]].reset_index(drop=True)
+
+print(f"Filas generadas: {len(df_name_layer)}")
 df_name_layer
