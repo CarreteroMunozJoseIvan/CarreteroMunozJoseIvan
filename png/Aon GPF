@@ -1,47 +1,62 @@
-import pandas as pd
-from pathlib import Path
+import os
+import shutil
 
-excel_path = Path(
-    r"C:\Users\lmunoz01\OneDrive - Everest Reinsurance\Documents\Aon GPF Automation\Lineslip Tracker 2025_ivan.xlsx"
-)
-sheet_name = "GPF"
+# =======================
+# 1. RUTAS BASE
+# =======================
+base_dir = r"C:\Users\lmunoz01\OneDrive - Everest Reinsurance\Documents\Aon GPF Automation"
+template_dir = os.path.join(base_dir, "_Dec Folder Template")
+bound_dir = os.path.join(base_dir, "Bound")
 
-# 1) Leer Excel
-df = pd.read_excel(excel_path, sheet_name=sheet_name, header=2)
+# Comprobar que plantilla existe
+if not os.path.exists(template_dir):
+    raise FileNotFoundError(f"No existe la plantilla: {template_dir}")
 
-# 2) Relación Excel → índices pandas
-excel_header_row = 3
-first_data_row_excel = excel_header_row + 1   # = 4
-start_excel_row = 190                         # desde aquí van los nuevos slips
+# Crear Bound si no existe
+os.makedirs(bound_dir, exist_ok=True)
 
-start_idx = start_excel_row - first_data_row_excel  # 190 -> índice 186
+# Subcarpetas dentro de la plantilla
+template_subfolders = [
+    f for f in os.listdir(template_dir)
+    if os.path.isdir(os.path.join(template_dir, f))
+]
+print("Subcarpetas plantilla:", template_subfolders)
 
-# 3) Filtrar solo filas nuevas con Account Name
-df_new = df.loc[start_idx:].copy()
-df_new = df_new[df_new["Account Name"].notna()]
 
-# 4) Construir GPFxx a partir de Unique Number
-def make_gpf(u):
-    if pd.isna(u):
-        return ""
-    # normalmente viene como float (ej. 31.0) → lo pasamos a int
-    return f"GPF{int(u)}"
+# =======================
+# 2. Limpieza de nombre de carpeta
+# =======================
+def safe_folder_name(name: str) -> str:
+    forbidden = '<>:"/\\|?*'
+    cleaned = "".join("_" if c in forbidden else c for c in name)
+    return cleaned.strip()
 
-df_new["GPFRef"] = df_new["Unique Number"].apply(make_gpf)
 
-# 5) Construir NameLayer con el formato:
-#    Account Name - Layer - [GPFxx]
-df_new["NameLayer"] = (
-    df_new["Account Name"].astype(str)
-    + " - "
-    + df_new["Layer"].astype(str)
-    + " - ["
-    + df_new["GPFRef"].astype(str)
-    + "]"
-)
+# =======================
+# 3. CREAR CARPETAS POR CADA NameLayer
+# df_name_layer debe tener la columna "NameLayer"
+# =======================
+created = 0
 
-# 6) Nos quedamos solo con esa columna
-df_name_layer = df_new[["NameLayer"]].reset_index(drop=True)
+for raw_name in df_name_layer["NameLayer"]:
+    if not isinstance(raw_name, str) or not raw_name.strip():
+        continue
 
-print(f"Filas generadas: {len(df_name_layer)}")
-df_name_layer
+    folder_name = safe_folder_name(raw_name)
+
+    # Carpeta final
+    account_dir = os.path.join(bound_dir, folder_name)
+
+    if not os.path.exists(account_dir):
+        os.makedirs(account_dir, exist_ok=True)
+        created += 1
+        print(f"✅ Creado: {account_dir}")
+    else:
+        print(f"⚠️ Ya existe: {account_dir}")
+
+    # Crear subcarpetas
+    for sub in template_subfolders:
+        sub_path = os.path.join(account_dir, sub)
+        os.makedirs(sub_path, exist_ok=True)
+
+print(f"\n🎉 Carpetas creadas (nuevas): {created}")
