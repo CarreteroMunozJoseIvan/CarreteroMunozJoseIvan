@@ -1,17 +1,12 @@
-import os
-import datetime
-
-base_dir = r"C:\ruta\de\tu\carpeta"
-
-today = datetime.date.today()
-
 for folder in os.listdir(base_dir):
     folder_path = os.path.join(base_dir, folder)
 
+    # Solo mirar subcarpetas
     if os.path.isdir(folder_path):
-        creation_time = datetime.date.fromtimestamp(os.path.getctime(folder_path))
 
-        # Si la creación es hoy → elimínala
-        if creation_time == today:
-            print("Eliminando:", folder_path)
-            os.rmdir(folder_path)     # Solo funciona si la carpeta está vacía
+        # Comprobar si está vacía
+        if not os.listdir(folder_path):
+            print("Eliminando carpeta vacía:", folder_path)
+            os.rmdir(folder_path)
+        else:
+            print("Carpeta con contenido, no se elimina:", folder_path)
