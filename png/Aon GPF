@@ -1,12 +1,22 @@
-for folder in os.listdir(base_dir):
-    folder_path = os.path.join(base_dir, folder)
+import os
 
-    # Solo mirar subcarpetas
-    if os.path.isdir(folder_path):
+# Carpeta base (Final_Slips)
+base_dir = r"C:\Users\TU_USUARIO\OneDrive\Documents\Aon GPF Automation\Final_Slips"
 
-        # Comprobar si está vacía
-        if not os.listdir(folder_path):
-            print("Eliminando carpeta vacía:", folder_path)
-            os.rmdir(folder_path)
-        else:
-            print("Carpeta con contenido, no se elimina:", folder_path)
+# ---- 1) Imprimir TODOS los PDFs de todas las subcarpetas ----
+print("PDFs encontrados:\n")
+for root, dirs, files in os.walk(base_dir):
+    for file in files:
+        if file.lower().endswith(".pdf"):
+            full_path = os.path.join(root, file)
+            print(full_path)
+
+# ---- 2) Imprimir TODOS los Excels de todas las subcarpetas ----
+ext_excel = (".xlsx", ".xlsm", ".xls", ".xlsb")
+print("\nExcels encontrados:\n")
+for root, dirs, files in os.walk(base_dir):
+    for file in files:
+        if file.lower().endswith(ext_excel):
+            full_path = os.path.join(root, file)
+            print(full_path)
+
