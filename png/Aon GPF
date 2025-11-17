@@ -1,22 +1,154 @@
 import os
+import re
+import shutil
+import fitz  # PyMuPDF → pip install pymupdf
 
-# Carpeta base (Final_Slips)
-base_dir = r"C:\Users\TU_USUARIO\OneDrive\Documents\Aon GPF Automation\Final_Slips"
+# ================== CONFIGURACIÓN ==================
+source_dir = r"C:\Users\...\Aon GPF Automation\Final_Slips"  # carpeta donde están ahora los archivos
+bound_root = r"C:\Users\...\Aon GPF Automation\Bound"        # carpeta Bound con "Name - Layer - [GPFxxx]"
 
-# ---- 1) Imprimir TODOS los PDFs de todas las subcarpetas ----
-print("PDFs encontrados:\n")
-for root, dirs, files in os.walk(base_dir):
+# ================== HELPERS ==================
+
+def get_pdf_text(pdf_path: str) -> str:
+    """Extrae el texto de todo el PDF."""
+    doc = fitz.open(pdf_path)
+    text = ""
+    for page in doc:
+        text += page.get_text()
+    doc.close()
+    return text
+
+
+def is_claims_file(filename: str) -> bool:
+    """Detecta si el archivo es de Claims."""
+    name = filename.lower()
+    return (
+        "claim" in name
+        or "loss record" in name
+        or "loss history" in name
+        or "claims history" in name
+        or "24.10.2024" in name  # caso específico que has comentado
+    )
+
+
+def find_bound_account_folder(bound_root: str, account_name: str, layer_str: str):
+    """
+    Busca la carpeta de Bound correspondiente usando Name - Layer.
+    Ejemplo de key: 'biomar group - primary dkk 350m'
+    """
+    if not account_name or not layer_str:
+        return None
+
+    key = f"{account_name} - {layer_str}".lower()
+
+    for folder_name in os.listdir(bound_root):
+        full = os.path.join(bound_root, folder_name)
+        if not os.path.isdir(full):
+            continue
+        # Nos vale con que empiece por "Name - Layer"
+        if folder_name.lower().startswith(key):
+            return full
+
+    return None
+
+
+def guess_bound_folder_from_filename(bound_root: str, filename: str):
+    """
+    Fallback: intenta adivinar la carpeta de Bound a partir del nombre del archivo.
+    Útil para Excels/SOV y Claims que no tienen layer en el propio doc.
+    """
+    base = os.path.splitext(filename)[0].lower()
+    tokens = re.findall(r"[a-z0-9]+", base)
+    tokens = [t for t in tokens if len(t) >= 4]  # ignoramos palabras muy cortas
+
+    if not tokens:
+        return None
+
+    candidates = []
+    for folder_name in os.listdir(bound_root):
+        full = os.path.join(bound_root, folder_name)
+        if not os.path.isdir(full):
+            continue
+        fl = folder_name.lower()
+        for t in tokens:
+            if t in fl:
+                candidates.append((folder_name, t))
+                break
+
+    if not candidates:
+        return None
+
+    # Nos quedamos con el candidato cuya palabra compartida es más larga
+    candidates.sort(key=lambda x: len(x[1]), reverse=True)
+    chosen = candidates[0][0]
+    return os.path.join(bound_root, chosen)
+
+
+def move_file_to_subfolder(src_path: str, bound_account_folder: str, subfolder_name: str):
+    """Mueve el archivo a la subcarpeta adecuada dentro de Bound."""
+    os.makedirs(os.path.join(bound_account_folder, subfolder_name), exist_ok=True)
+
+    filename = os.path.basename(src_path)
+    dst_path = os.path.join(bound_account_folder, subfolder_name, filename)
+
+    print(f"Moviendo: {filename}  ->  {subfolder_name}  ({bound_account_folder})")
+    shutil.move(src_path, dst_path)
+
+
+# ================== PROCESO PRINCIPAL ==================
+
+excel_exts = (".xlsx", ".xls", ".xlsm", ".xlsb")
+
+for root, dirs, files in os.walk(source_dir):
     for file in files:
-        if file.lower().endswith(".pdf"):
-            full_path = os.path.join(root, file)
-            print(full_path)
+        src_path = os.path.join(root, file)
+        ext = os.path.splitext(file)[1].lower()
 
-# ---- 2) Imprimir TODOS los Excels de todas las subcarpetas ----
-ext_excel = (".xlsx", ".xlsm", ".xls", ".xlsb")
-print("\nExcels encontrados:\n")
-for root, dirs, files in os.walk(base_dir):
-    for file in files:
-        if file.lower().endswith(ext_excel):
-            full_path = os.path.join(root, file)
-            print(full_path)
+        # 1) CLASIFICACIÓN
+        if ext == ".pdf":
+            if is_claims_file(file):
+                category = "Claims History"
+                # carpeta Bound a partir del nombre del archivo
+                bound_folder = guess_bound_folder_from_filename(bound_root, file)
+            else:
+                category = "Final Slips"
+                text = get_pdf_text(src_path)
 
+                # ====== AQUÍ USAMOS TUS FUNCIONES YA DEFINIDAS ======
+                account_name = parse_account_name(text)  # ya la tienes
+                layer_str, cur, layer_type, limit, attachment = parse_layer_block(text)  # ya la tienes
+                # ====================================================
+
+                # Intentamos localizar carpeta Bound exacta Name - Layer
+                bound_folder = find_bound_account_folder(bound_root, account_name, layer_str)
+
+                # Si no la encontramos, fallback por nombre de archivo
+                if bound_folder is None:
+                    bound_folder = guess_bound_folder_from_filename(bound_root, file)
+
+        elif ext in excel_exts:
+            # Todos los Excels: Claims -> Claims History, resto -> SOV
+            if is_claims_file(file):
+                category = "Claims History"
+            else:
+                category = "SOV"
+
+            bound_folder = guess_bound_folder_from_filename(bound_root, file)
+
+        else:
+            # Otros tipos, de momento los ignoramos
+            print(f"Saltando (tipo de archivo no manejado): {file}")
+            continue
+
+        # 2) SI NO ENCONTRAMOS CARPETA BOUND, AVISAMOS Y SEGUIMOS
+        if bound_folder is None:
+            print(f"[AVISO] No se ha encontrado carpeta Bound para: {file}")
+            continue
+
+        # 3) MOVEMOS EL ARCHIVO SEGÚN LA CATEGORÍA
+        if category == "Final Slips":
+            move_file_to_subfolder(src_path, bound_folder, "Final Slips")
+        elif category == "Claims History":
+            move_file_to_subfolder(src_path, bound_folder, "Claims History")
+        elif category == "SOV":
+            move_file_to_subfolder(src_path, bound_folder, "SOV")
