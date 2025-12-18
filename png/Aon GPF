@@ -1,154 +1,96 @@
-import os
+import pandas as pd
 import re
-import shutil
-import fitz  # PyMuPDF → pip install pymupdf
+from difflib import SequenceMatcher
 
-# ================== CONFIGURACIÓN ==================
-source_dir = r"C:\Users\...\Aon GPF Automation\Final_Slips"  # carpeta donde están ahora los archivos
-bound_root = r"C:\Users\...\Aon GPF Automation\Bound"        # carpeta Bound con "Name - Layer - [GPFxxx]"
+# df: columnas ["Account Name", "UMR"]
 
-# ================== HELPERS ==================
+# 1) Normalización (quita ruido típico y unifica formato)
+def normalize_name(s: str) -> str:
+    if pd.isna(s):
+        return ""
+    s = s.upper().strip()
+    s = s.replace("&", " AND ")
+    s = re.sub(r"[^\w\s]", " ", s)          # quita puntuación
+    s = re.sub(r"\s+", " ", s).strip()      # espacios múltiples
 
-def get_pdf_text(pdf_path: str) -> str:
-    """Extrae el texto de todo el PDF."""
-    doc = fitz.open(pdf_path)
-    text = ""
-    for page in doc:
-        text += page.get_text()
-    doc.close()
-    return text
+    # opcional: quitar sufijos comunes (ajusta a tu gusto)
+    suffixes = [
+        " LTD", " LIMITED", " LLC", " INC", " GMBH", " S A", " SA", " SPA", " PLC",
+        " PTY", " PTY LTD", " CO", " CORP", " CORPORATION", " GROUP"
+    ]
+    for suf in suffixes:
+        if s.endswith(suf):
+            s = s[: -len(suf)].strip()
 
+    return s
 
-def is_claims_file(filename: str) -> bool:
-    """Detecta si el archivo es de Claims."""
-    name = filename.lower()
-    return (
-        "claim" in name
-        or "loss record" in name
-        or "loss history" in name
-        or "claims history" in name
-        or "24.10.2024" in name  # caso específico que has comentado
-    )
+df = df.copy()
+df["name_norm"] = df["Account Name"].map(normalize_name)
 
+# 2) Primero: agrupación exacta por normalizado
+# (esto ya junta "The City Of Calgary" vs "THE CITY OF CALGARY", etc.)
+# Luego: fuzzy matching entre los normalizados para juntar casi-iguales
+def similarity(a: str, b: str) -> float:
+    return SequenceMatcher(None, a, b).ratio()
 
-def find_bound_account_folder(bound_root: str, account_name: str, layer_str: str):
+def fuzzy_group_names(names, threshold=0.92):
     """
-    Busca la carpeta de Bound correspondiente usando Name - Layer.
-    Ejemplo de key: 'biomar group - primary dkk 350m'
+    Devuelve dict: name_norm -> group_id, agrupando por similitud >= threshold
     """
-    if not account_name or not layer_str:
-        return None
+    names = sorted(set([n for n in names if n]))
+    group_id = 0
+    mapping = {}
+    reps = []  # representantes de cada grupo
 
-    key = f"{account_name} - {layer_str}".lower()
-
-    for folder_name in os.listdir(bound_root):
-        full = os.path.join(bound_root, folder_name)
-        if not os.path.isdir(full):
+    for n in names:
+        if n in mapping:
             continue
-        # Nos vale con que empiece por "Name - Layer"
-        if folder_name.lower().startswith(key):
-            return full
 
-    return None
+        # intenta encajar en grupo existente
+        best_gid = None
+        best_score = 0.0
 
+        for gid, rep in reps:
+            sc = similarity(n, rep)
+            if sc > best_score:
+                best_score = sc
+                best_gid = gid
 
-def guess_bound_folder_from_filename(bound_root: str, filename: str):
-    """
-    Fallback: intenta adivinar la carpeta de Bound a partir del nombre del archivo.
-    Útil para Excels/SOV y Claims que no tienen layer en el propio doc.
-    """
-    base = os.path.splitext(filename)[0].lower()
-    tokens = re.findall(r"[a-z0-9]+", base)
-    tokens = [t for t in tokens if len(t) >= 4]  # ignoramos palabras muy cortas
-
-    if not tokens:
-        return None
-
-    candidates = []
-    for folder_name in os.listdir(bound_root):
-        full = os.path.join(bound_root, folder_name)
-        if not os.path.isdir(full):
-            continue
-        fl = folder_name.lower()
-        for t in tokens:
-            if t in fl:
-                candidates.append((folder_name, t))
-                break
-
-    if not candidates:
-        return None
-
-    # Nos quedamos con el candidato cuya palabra compartida es más larga
-    candidates.sort(key=lambda x: len(x[1]), reverse=True)
-    chosen = candidates[0][0]
-    return os.path.join(bound_root, chosen)
-
-
-def move_file_to_subfolder(src_path: str, bound_account_folder: str, subfolder_name: str):
-    """Mueve el archivo a la subcarpeta adecuada dentro de Bound."""
-    os.makedirs(os.path.join(bound_account_folder, subfolder_name), exist_ok=True)
-
-    filename = os.path.basename(src_path)
-    dst_path = os.path.join(bound_account_folder, subfolder_name, filename)
-
-    print(f"Moviendo: {filename}  ->  {subfolder_name}  ({bound_account_folder})")
-    shutil.move(src_path, dst_path)
-
-
-# ================== PROCESO PRINCIPAL ==================
-
-excel_exts = (".xlsx", ".xls", ".xlsm", ".xlsb")
-
-for root, dirs, files in os.walk(source_dir):
-    for file in files:
-        src_path = os.path.join(root, file)
-        ext = os.path.splitext(file)[1].lower()
-
-        # 1) CLASIFICACIÓN
-        if ext == ".pdf":
-            if is_claims_file(file):
-                category = "Claims History"
-                # carpeta Bound a partir del nombre del archivo
-                bound_folder = guess_bound_folder_from_filename(bound_root, file)
-            else:
-                category = "Final Slips"
-                text = get_pdf_text(src_path)
-
-                # ====== AQUÍ USAMOS TUS FUNCIONES YA DEFINIDAS ======
-                account_name = parse_account_name(text)  # ya la tienes
-                layer_str, cur, layer_type, limit, attachment = parse_layer_block(text)  # ya la tienes
-                # ====================================================
-
-                # Intentamos localizar carpeta Bound exacta Name - Layer
-                bound_folder = find_bound_account_folder(bound_root, account_name, layer_str)
-
-                # Si no la encontramos, fallback por nombre de archivo
-                if bound_folder is None:
-                    bound_folder = guess_bound_folder_from_filename(bound_root, file)
-
-        elif ext in excel_exts:
-            # Todos los Excels: Claims -> Claims History, resto -> SOV
-            if is_claims_file(file):
-                category = "Claims History"
-            else:
-                category = "SOV"
-
-            bound_folder = guess_bound_folder_from_filename(bound_root, file)
-
+        if best_gid is not None and best_score >= threshold:
+            mapping[n] = best_gid
         else:
-            # Otros tipos, de momento los ignoramos
-            print(f"Saltando (tipo de archivo no manejado): {file}")
-            continue
+            group_id += 1
+            mapping[n] = group_id
+            reps.append((group_id, n))
 
-        # 2) SI NO ENCONTRAMOS CARPETA BOUND, AVISAMOS Y SEGUIMOS
-        if bound_folder is None:
-            print(f"[AVISO] No se ha encontrado carpeta Bound para: {file}")
-            continue
+    return mapping
 
-        # 3) MOVEMOS EL ARCHIVO SEGÚN LA CATEGORÍA
-        if category == "Final Slips":
-            move_file_to_subfolder(src_path, bound_folder, "Final Slips")
-        elif category == "Claims History":
-            move_file_to_subfolder(src_path, bound_folder, "Claims History")
-        elif category == "SOV":
-            move_file_to_subfolder(src_path, bound_folder, "SOV")
+name_to_gid = fuzzy_group_names(df["name_norm"].tolist(), threshold=0.92)
+df["group_id"] = df["name_norm"].map(lambda x: name_to_gid.get(x, None))
+
+# 3) Elegir un nombre “canónico” por grupo (el más frecuente o el más largo)
+canonical = (
+    df.groupby("group_id")["Account Name"]
+      .agg(lambda s: s.value_counts().index[0])
+      .rename("canonical_name")
+)
+df = df.join(canonical, on="group_id")
+
+# 4) Resultado agrupado: cada cuenta (grupo) con lista de UMRs y variantes del nombre
+grouped = (
+    df.groupby(["group_id", "canonical_name"], as_index=False)
+      .agg(
+          UMRs=("UMR", lambda x: sorted(set(x))),
+          Name_variants=("Account Name", lambda x: sorted(set(x))),
+          Rows=("UMR", "size")
+      )
+      .sort_values(["Rows", "canonical_name"], ascending=[False, True])
+)
+
+# 5) Si quieres ver cuáles NO se agruparon (grupos de 1 sola fila)
+not_grouped = grouped[grouped["Rows"] == 1].copy()
+
+print("AGRUPADAS (Rows>1):", (grouped["Rows"] > 1).sum())
+print("NO AGRUPADAS (Rows=1):", (grouped["Rows"] == 1).sum())
+
+grouped.head()
