@@ -1,96 +1,13 @@
-import pandas as pd
-import re
-from difflib import SequenceMatcher
+# Seleccionamos solo las columnas que quieres
+df_excel = grouped[["canonical_name", "UMRs"]].copy()
 
-# df: columnas ["Account Name", "UMR"]
+# Convertimos la lista de UMRs a string
+df_excel["UMRs"] = df_excel["UMRs"].apply(lambda x: ", ".join(x))
 
-# 1) Normalización (quita ruido típico y unifica formato)
-def normalize_name(s: str) -> str:
-    if pd.isna(s):
-        return ""
-    s = s.upper().strip()
-    s = s.replace("&", " AND ")
-    s = re.sub(r"[^\w\s]", " ", s)          # quita puntuación
-    s = re.sub(r"\s+", " ", s).strip()      # espacios múltiples
+output_path = "accounts_grouped.xlsx"
 
-    # opcional: quitar sufijos comunes (ajusta a tu gusto)
-    suffixes = [
-        " LTD", " LIMITED", " LLC", " INC", " GMBH", " S A", " SA", " SPA", " PLC",
-        " PTY", " PTY LTD", " CO", " CORP", " CORPORATION", " GROUP"
-    ]
-    for suf in suffixes:
-        if s.endswith(suf):
-            s = s[: -len(suf)].strip()
-
-    return s
-
-df = df.copy()
-df["name_norm"] = df["Account Name"].map(normalize_name)
-
-# 2) Primero: agrupación exacta por normalizado
-# (esto ya junta "The City Of Calgary" vs "THE CITY OF CALGARY", etc.)
-# Luego: fuzzy matching entre los normalizados para juntar casi-iguales
-def similarity(a: str, b: str) -> float:
-    return SequenceMatcher(None, a, b).ratio()
-
-def fuzzy_group_names(names, threshold=0.92):
-    """
-    Devuelve dict: name_norm -> group_id, agrupando por similitud >= threshold
-    """
-    names = sorted(set([n for n in names if n]))
-    group_id = 0
-    mapping = {}
-    reps = []  # representantes de cada grupo
-
-    for n in names:
-        if n in mapping:
-            continue
-
-        # intenta encajar en grupo existente
-        best_gid = None
-        best_score = 0.0
-
-        for gid, rep in reps:
-            sc = similarity(n, rep)
-            if sc > best_score:
-                best_score = sc
-                best_gid = gid
-
-        if best_gid is not None and best_score >= threshold:
-            mapping[n] = best_gid
-        else:
-            group_id += 1
-            mapping[n] = group_id
-            reps.append((group_id, n))
-
-    return mapping
-
-name_to_gid = fuzzy_group_names(df["name_norm"].tolist(), threshold=0.92)
-df["group_id"] = df["name_norm"].map(lambda x: name_to_gid.get(x, None))
-
-# 3) Elegir un nombre “canónico” por grupo (el más frecuente o el más largo)
-canonical = (
-    df.groupby("group_id")["Account Name"]
-      .agg(lambda s: s.value_counts().index[0])
-      .rename("canonical_name")
+df_excel.to_excel(
+    output_path,
+    index=False,
+    sheet_name="Accounts"
 )
-df = df.join(canonical, on="group_id")
-
-# 4) Resultado agrupado: cada cuenta (grupo) con lista de UMRs y variantes del nombre
-grouped = (
-    df.groupby(["group_id", "canonical_name"], as_index=False)
-      .agg(
-          UMRs=("UMR", lambda x: sorted(set(x))),
-          Name_variants=("Account Name", lambda x: sorted(set(x))),
-          Rows=("UMR", "size")
-      )
-      .sort_values(["Rows", "canonical_name"], ascending=[False, True])
-)
-
-# 5) Si quieres ver cuáles NO se agruparon (grupos de 1 sola fila)
-not_grouped = grouped[grouped["Rows"] == 1].copy()
-
-print("AGRUPADAS (Rows>1):", (grouped["Rows"] > 1).sum())
-print("NO AGRUPADAS (Rows=1):", (grouped["Rows"] == 1).sum())
-
-grouped.head()
