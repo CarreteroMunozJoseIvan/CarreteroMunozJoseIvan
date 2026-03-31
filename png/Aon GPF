@@ -1,13 +1,83 @@
-# Seleccionamos solo las columnas que quieres
-df_excel = grouped[["canonical_name", "UMRs"]].copy()
+from pathlib import Path
+import pandas as pd
 
-# Convertimos la lista de UMRs a string
-df_excel["UMRs"] = df_excel["UMRs"].apply(lambda x: ", ".join(x))
+base_dir = Path(r"C:\Users\imunoz01\OneDrive - Everest Reinsurance\Documents\Aon GPF Automation")
+template_dir = base_dir / "_Dec Folder Template"
 
-output_path = "accounts_grouped.xlsx"
+# AQUÍ se crean las carpetas que faltan
+bound_dir = base_dir / "Lastday"
 
-df_excel.to_excel(
-    output_path,
-    index=False,
-    sheet_name="Accounts"
-)
+# AQUÍ solo se comprueba si existen
+check_dir = Path(r"T:\Syndicate\Property\UA Files\Bulking and Non-Bulking Lineslips\Aon GPF\2025\06_Declarations\Lastday")
+
+# Comprobar que plantilla existe
+if not template_dir.exists():
+    raise FileNotFoundError(f"No existe la plantilla: {template_dir}")
+
+# Crear Lastday local si no existe
+bound_dir.mkdir(parents=True, exist_ok=True)
+
+# Subcarpetas dentro de la plantilla
+template_subfolders = [f for f in template_dir.iterdir() if f.is_dir()]
+print("Subcarpetas plantilla:", [f.name for f in template_subfolders])
+
+
+# ==========================
+# 2. Limpieza de nombre de carpeta
+# ==========================
+def safe_folder_name(name: str) -> str:
+    forbidden = '<>:"/\\|?*'
+    cleaned = "".join("_" if c in forbidden else c for c in str(name))
+    return cleaned.strip()
+
+
+# ==========================
+# 3. CREAR CARPETAS POR CADA Name Folders
+# ==========================
+created = 0
+
+df_name_excel = pd.read_excel("Folder_setup.xlsx")
+
+# Carpetas existentes en el path azul (NO sensitive)
+existing_in_blue = {
+    p.name.lower()
+    for p in check_dir.iterdir()
+    if p.is_dir()
+}
+
+# Carpetas ya existentes en Aon GPF Automation\Lastday
+existing_in_bound = {
+    p.name.lower(): p
+    for p in bound_dir.iterdir()
+    if p.is_dir()
+}
+
+for raw_name in df_name_excel["Name Folders"]:
+    if not isinstance(raw_name, str) or not raw_name.strip():
+        continue
+
+    folder_name = safe_folder_name(raw_name)
+    folder_key = folder_name.lower()
+
+    # SOLO comprobar en el path azul
+    if folder_key in existing_in_blue:
+        print(f"⚠️ Ya existe en path azul: {folder_name}")
+        continue
+
+    # Si no existe en el azul, crearla en Aon GPF Automation\Lastday
+    if folder_key in existing_in_bound:
+        account_dir = existing_in_bound[folder_key]
+        print(f"⚠️ Ya estaba creada en local: {account_dir}")
+    else:
+        account_dir = bound_dir / folder_name
+        account_dir.mkdir(parents=True, exist_ok=True)
+        existing_in_bound[folder_key] = account_dir
+        created += 1
+        print(f"✅ Creado en local: {account_dir}")
+
+    # Crear subcarpetas de la plantilla
+    for sub in template_subfolders:
+        sub_path = account_dir / sub.name
+        sub_path.mkdir(exist_ok=True)
+
+print(f"\nTotal nuevas carpetas creadas en local: {created}")
