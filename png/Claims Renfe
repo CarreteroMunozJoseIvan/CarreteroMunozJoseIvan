@@ -1,1 +1,37 @@
-N[úu]merodedocumento\s*:\s*(\d+)
+meses = {
+    1: "enero",
+    2: "febrero",
+    3: "marzo",
+    4: "abril",
+    5: "mayo",
+    6: "junio",
+    7: "julio",
+    8: "agosto",
+    9: "septiembre",
+    10: "octubre",
+    11: "noviembre",
+    12: "diciembre"
+}
+
+fecha_dt = df["dia_recibido"].iloc[0]
+
+fecha_texto = f"{fecha_dt.day} de {meses[fecha_dt.month]}"
+
+referencias = " - ".join(
+    df["referencia"]
+    .dropna()
+    .astype(str)
+    .str.replace(" ", "", regex=False)
+)
+
+texto_email = f"""Buenos días,
+
+Adjunto envío nuevas facturas recibidas el día {fecha_texto} con relación a los siguientes expedientes: {referencias}
+
+Rogamos nos confirméis una vez realizado el pago.
+
+Muchas gracias.
+
+Saludos,"""
+
+print(texto_email)
