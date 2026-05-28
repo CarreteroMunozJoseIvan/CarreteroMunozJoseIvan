@@ -1,40 +1,66 @@
+import os
+import re
+import pandas as pd
+import pdfplumber
+
+folder_path = r"C:\Users\TU_USUARIO\OneDrive\Documents\Claims\Renfe\Correos"
+
 results = []
 
 for file in os.listdir(folder_path):
+
     if file.lower().endswith(".pdf"):
+
         pdf_path = os.path.join(folder_path, file)
 
+        numero_documento = None
+        referencia = None
+        importe = None
+
         with pdfplumber.open(pdf_path) as pdf:
-            for page_num, page in enumerate(pdf.pages, start=1):
-                text = page.extract_text() or ""
 
-                numero_documento = None
-                expediente = None
-                importe = None
+            # SOLO PRIMERA PÁGINA
+            first_page = pdf.pages[0]
 
-                # Número de documento
-                match_doc = re.search(r"Número de documento\s+(\d+)", text, re.IGNORECASE)
-                if match_doc:
-                    numero_documento = match_doc.group(1)
+            text = first_page.extract_text() or ""
 
-                # Expediente tipo VR 8547
-                match_exp = re.search(r"\b(VR\s*\d+)\b", text, re.IGNORECASE)
-                if match_exp:
-                    expediente = match_exp.group(1).replace(" ", " ").upper()
+            # Número documento
+            match_doc = re.search(
+                r"Número de documento\s*:\s*(\d+)",
+                text,
+                re.IGNORECASE
+            )
 
-                # Importe total
-                match_importe = re.search(r"Total\s+([\d.,]+)", text, re.IGNORECASE)
-                if match_importe:
-                    importe = match_importe.group(1)
+            if match_doc:
+                numero_documento = match_doc.group(1)
 
-                if numero_documento or expediente or importe:
-                    results.append({
-                        "pdf_file": file,
-                        "page": page_num,
-                        "numero_documento": numero_documento,
-                        "expediente": expediente,
-                        "importe": importe
-                    })
+            # Referencia EVER XXXX
+            match_ref = re.search(
+                r"S/REF:\s*([A-Z]+\s*\d+)",
+                text,
+                re.IGNORECASE
+            )
+
+            if match_ref:
+                referencia = match_ref.group(1).strip().upper()
+
+            # Importe total
+            match_importe = re.search(
+                r"Total\s+([\d,\.]+)",
+                text,
+                re.IGNORECASE
+            )
+
+            if match_importe:
+                importe = match_importe.group(1)
+
+        results.append({
+            "pdf_file": file,
+            "numero_documento": numero_documento,
+            "referencia": referencia,
+            "importe": importe
+        })
 
 df = pd.DataFrame(results)
+
 df
