@@ -1,31 +1,40 @@
-
-import os
-import win32com.client
-
-# Carpeta donde tienes los correos guardados
-folder_path = r"C:\Users\TU_USUARIO\OneDrive\Documents\Claims\Renfe\Correos"
-
-outlook = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
+results = []
 
 for file in os.listdir(folder_path):
-    if file.lower().endswith(".msg"):
-        msg_path = os.path.join(folder_path, file)
-        mail = outlook.OpenSharedItem(msg_path)
+    if file.lower().endswith(".pdf"):
+        pdf_path = os.path.join(folder_path, file)
 
-        for attachment in mail.Attachments:
-            filename = attachment.FileName
+        with pdfplumber.open(pdf_path) as pdf:
+            for page_num, page in enumerate(pdf.pages, start=1):
+                text = page.extract_text() or ""
 
-            if filename.lower().endswith(".pdf"):
-                save_path = os.path.join(folder_path, filename)
+                numero_documento = None
+                expediente = None
+                importe = None
 
-                # Evita sobrescribir si ya existe
-                base, ext = os.path.splitext(save_path)
-                counter = 1
-                while os.path.exists(save_path):
-                    save_path = f"{base}_{counter}{ext}"
-                    counter += 1
+                # Número de documento
+                match_doc = re.search(r"Número de documento\s+(\d+)", text, re.IGNORECASE)
+                if match_doc:
+                    numero_documento = match_doc.group(1)
 
-                attachment.SaveAsFile(save_path)
-                print(f"Guardado: {save_path}")
+                # Expediente tipo VR 8547
+                match_exp = re.search(r"\b(VR\s*\d+)\b", text, re.IGNORECASE)
+                if match_exp:
+                    expediente = match_exp.group(1).replace(" ", " ").upper()
 
-print("Proceso terminado.")
+                # Importe total
+                match_importe = re.search(r"Total\s+([\d.,]+)", text, re.IGNORECASE)
+                if match_importe:
+                    importe = match_importe.group(1)
+
+                if numero_documento or expediente or importe:
+                    results.append({
+                        "pdf_file": file,
+                        "page": page_num,
+                        "numero_documento": numero_documento,
+                        "expediente": expediente,
+                        "importe": importe
+                    })
+
+df = pd.DataFrame(results)
+df
