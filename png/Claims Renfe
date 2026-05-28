@@ -1,11 +1,22 @@
-lesionado = None
+import os
+import pandas as pd
+from openpyxl import load_workbook
 
-match_lesionado = re.search(
-    r"Nombredelasistido\s*:\s*([A-ZÁÉÍÓÚÑ\s]+?)\s*Observaciones",
-    text,
-    re.IGNORECASE
-)
+excel_path = r"C:\Users\TU_USUARIO\OneDrive - Ivan - Everest Reinsurance\Documents\Claims\Renfe\Renfe facturas.xlsx"
+sheet_name = "Python"
 
-if match_lesionado:
-    lesionado = match_lesionado.group(1).strip()
+# Cargar Excel
+wb = load_workbook(excel_path)
+ws = wb[sheet_name]
 
+# Buscar la siguiente fila vacía
+next_row = ws.max_row + 1
+
+# Añadir el dataframe sin headers
+for row in df.itertuples(index=False):
+    ws.append(row)
+
+# Guardar
+wb.save(excel_path)
+
+print("DataFrame añadido correctamente al Excel.")
