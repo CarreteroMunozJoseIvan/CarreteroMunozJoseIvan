@@ -1,37 +1,35 @@
-meses = {
-    1: "enero",
-    2: "febrero",
-    3: "marzo",
-    4: "abril",
-    5: "mayo",
-    6: "junio",
-    7: "julio",
-    8: "agosto",
-    9: "septiembre",
-    10: "octubre",
-    11: "noviembre",
-    12: "diciembre"
-}
+import os
+import shutil
 
-fecha_dt = df["dia_recibido"].iloc[0]
+# Carpeta origen
+source_folder = r"C:\Users\TU_USUARIO\OneDrive\Documents\Claims\Renfe\Correos"
 
-fecha_texto = f"{fecha_dt.day} de {meses[fecha_dt.month]}"
+# Carpeta destino
+destination_folder = r"C:\Users\TU_USUARIO\OneDrive\Documents\Claims\Renfe\Procesados"
 
-referencias = " - ".join(
-    df["referencia"]
-    .dropna()
-    .astype(str)
-    .str.replace(" ", "", regex=False)
-)
+# Crear carpeta destino si no existe
+os.makedirs(destination_folder, exist_ok=True)
 
-texto_email = f"""Buenos días,
+# Mover archivos
+for file in os.listdir(source_folder):
 
-Adjunto envío nuevas facturas recibidas el día {fecha_texto} con relación a los siguientes expedientes: {referencias}
+    source_path = os.path.join(source_folder, file)
+    destination_path = os.path.join(destination_folder, file)
 
-Rogamos nos confirméis una vez realizado el pago.
+    # Evitar problemas con carpetas
+    if os.path.isfile(source_path):
 
-Muchas gracias.
+        # Evitar sobrescribir
+        base, ext = os.path.splitext(destination_path)
+        counter = 1
 
-Saludos,"""
+        while os.path.exists(destination_path):
+            destination_path = f"{base}_{counter}{ext}"
+            counter += 1
 
-print(texto_email)
+        shutil.move(source_path, destination_path)
+
+        print(f"Movido: {file}")
+
+print("Todos los archivos fueron movidos.")
+
