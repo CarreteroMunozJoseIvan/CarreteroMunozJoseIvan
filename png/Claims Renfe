@@ -1,1 +1,31 @@
 
+import os
+import win32com.client
+
+# Carpeta donde tienes los correos guardados
+folder_path = r"C:\Users\TU_USUARIO\OneDrive\Documents\Claims\Renfe\Correos"
+
+outlook = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
+
+for file in os.listdir(folder_path):
+    if file.lower().endswith(".msg"):
+        msg_path = os.path.join(folder_path, file)
+        mail = outlook.OpenSharedItem(msg_path)
+
+        for attachment in mail.Attachments:
+            filename = attachment.FileName
+
+            if filename.lower().endswith(".pdf"):
+                save_path = os.path.join(folder_path, filename)
+
+                # Evita sobrescribir si ya existe
+                base, ext = os.path.splitext(save_path)
+                counter = 1
+                while os.path.exists(save_path):
+                    save_path = f"{base}_{counter}{ext}"
+                    counter += 1
+
+                attachment.SaveAsFile(save_path)
+                print(f"Guardado: {save_path}")
+
+print("Proceso terminado.")
