@@ -1,35 +1,11 @@
-import os
-import shutil
+lesionado = None
 
-# Carpeta origen
-source_folder = r"C:\Users\TU_USUARIO\OneDrive\Documents\Claims\Renfe\Correos"
+match_lesionado = re.search(
+    r"Nombredelasistido\s*:\s*([A-ZÁÉÍÓÚÑ\s]+?)\s*Observaciones",
+    text,
+    re.IGNORECASE
+)
 
-# Carpeta destino
-destination_folder = r"C:\Users\TU_USUARIO\OneDrive\Documents\Claims\Renfe\Procesados"
-
-# Crear carpeta destino si no existe
-os.makedirs(destination_folder, exist_ok=True)
-
-# Mover archivos
-for file in os.listdir(source_folder):
-
-    source_path = os.path.join(source_folder, file)
-    destination_path = os.path.join(destination_folder, file)
-
-    # Evitar problemas con carpetas
-    if os.path.isfile(source_path):
-
-        # Evitar sobrescribir
-        base, ext = os.path.splitext(destination_path)
-        counter = 1
-
-        while os.path.exists(destination_path):
-            destination_path = f"{base}_{counter}{ext}"
-            counter += 1
-
-        shutil.move(source_path, destination_path)
-
-        print(f"Movido: {file}")
-
-print("Todos los archivos fueron movidos.")
+if match_lesionado:
+    lesionado = match_lesionado.group(1).strip()
 
